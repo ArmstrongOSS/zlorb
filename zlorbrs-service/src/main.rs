@@ -15,21 +15,14 @@ fn setup_config_stuff() -> Result<ServiceConfig, ()> {
         std::env::home_dir().unwrap().to_str().unwrap()
     );
 
-    let config_file = match std::fs::read_to_string(path_to_config_file_for_service.clone()) {
-        Ok(a) => a,
-        Err(e) => {
-            error!("Failure reading config file to string: {e}");
-            error!(
-                "You need to ensure you create the config file @ {path_to_config_file_for_service}"
-            );
-            let config_default: ServiceConfig = Default::default();
-            error!(
-                "I will at some point do it for you but in the meantime use this: \n{:#?}",
-                config_default
-            );
-            return Err(());
-        }
-    };
+    if !fs::exists(&path_to_config_file_for_service).unwrap() {
+        info!("Service config file not found.. creating it now");
+        let _ = fs::write(
+            &path_to_config_file_for_service,
+            &serde_json::to_string(&ServiceConfig::default()).unwrap(),
+        );
+    }
+    let config_file = std::fs::read_to_string(path_to_config_file_for_service).unwrap();
 
     let config_data = serde_json::from_str::<ServiceConfig>(&config_file)
         .expect("Failed to convert config file to json string");
@@ -110,6 +103,7 @@ fn kick_off_build(config_json: &Config) {
     let path = format!("{}", config_json.path);
     debug!("Running build for: {}", config_json.path);
 
+    let build_command = config_json.build_command.clone();
     let handle = std::thread::spawn(move || {
         let set_dir_res = std::env::set_current_dir(path.clone());
         if set_dir_res.is_err() {
@@ -120,26 +114,11 @@ fn kick_off_build(config_json: &Config) {
             );
         }
 
-        let bun_install_handle = std::process::Command::new("/root/.bun/bin/bun")
-            .arg("i")
-            .stdout(Stdio::piped())
-            .output();
-        if bun_install_handle.is_err() {
-            error!(
-                "Bun install handle failure: {}",
-                bun_install_handle.err().unwrap()
-            );
-            return;
-        }
-
-        // TODO this needs to be populated via config
-        let bun_handle = std::process::Command::new("/root/.bun/bin/bun")
-            .arg("run")
-            .arg("build")
+        let build_handle = std::process::Command::new(build_command)
             .stdout(Stdio::piped())
             .output();
 
-        match bun_handle {
+        match build_handle {
             Ok(h) => {
                 debug!("got status: {:?}", h.status);
                 match h.status.code() {
@@ -242,13 +221,13 @@ mod tests {
 
     fn setup_test_env(test_name: &str) -> TestEnv {
         let lock = ENV_MUTEX.lock().unwrap();
-        
+
         // Setup mocked HOME directory
         let mut home_dir = env::temp_dir();
         home_dir.push(format!("zlorbrs_svc_home_{}", test_name));
         let _ = fs::remove_dir_all(&home_dir);
         fs::create_dir_all(&home_dir).unwrap();
-        
+
         let home_dir = home_dir.canonicalize().unwrap_or(home_dir);
 
         unsafe {
@@ -264,18 +243,18 @@ mod tests {
     #[test]
     fn test_setup_config_stuff_success() {
         let env = setup_test_env("svc_config_success");
-        
+
         // Create the expected configuration file
         let config_dir = env.home_dir.join(".config/zlorbrs");
         fs::create_dir_all(&config_dir).unwrap();
-        
+
         let config_file_path = config_dir.join("service-config.json");
         let valid_json = r#"{ "sleep_time": 42 }"#;
         fs::write(config_file_path, valid_json).unwrap();
 
         let result = setup_config_stuff();
         assert!(result.is_ok());
-        
+
         let config = result.unwrap();
         assert_eq!(config.sleep_time, 42);
     }
@@ -283,7 +262,7 @@ mod tests {
     #[test]
     fn test_setup_config_stuff_missing() {
         let _env = setup_test_env("svc_config_missing");
-        
+
         // Do not create the file. setup_config_stuff should fail gracefully.
         let result = setup_config_stuff();
         assert!(result.is_err());
