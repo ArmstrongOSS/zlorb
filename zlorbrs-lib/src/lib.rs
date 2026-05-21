@@ -1,4 +1,5 @@
 pub mod config;
+pub mod error;
 
 use log::error;
 
@@ -26,12 +27,12 @@ mod tests {
     #[test]
     fn test_get_home_dir_success() {
         let _lock = shared_test_utils::ENV_MUTEX.lock().unwrap();
-        
+
         // Mock HOME so it always succeeds
         let mut tmp_dir = env::temp_dir();
         tmp_dir.push("zlorbrs_lib_home_test");
         std::fs::create_dir_all(&tmp_dir).unwrap();
-        
+
         unsafe {
             env::set_var("HOME", tmp_dir.to_str().unwrap());
         }
