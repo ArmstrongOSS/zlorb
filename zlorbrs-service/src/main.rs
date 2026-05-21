@@ -1,7 +1,12 @@
 use git2::{BranchType, Cred, Error, FetchOptions, Oid, Remote, RemoteCallbacks, Repository};
 use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Error as IoError, process::Stdio};
+use std::{
+    fs::{self, ReadDir},
+    io::{self, Error as IoError},
+    path::PathBuf,
+    process::Stdio,
+};
 use zlorbrs_lib::config::Config;
 
 #[derive(Serialize, Deserialize, Default, Debug)]
@@ -29,6 +34,22 @@ fn setup_config_stuff() -> Result<ServiceConfig, ()> {
     Ok(config_data)
 }
 
+fn handle_loop_start(first_run: &mut bool, sleep_time: u64) {
+    if !std::mem::replace(first_run, false) {
+        take_a_nap(sleep_time);
+    }
+}
+
+fn get_directory_path() -> PathBuf {
+    let mut path = std::env::home_dir().expect("Failed to get home directory");
+    path.push(".config/zlorbrs/configs");
+    path
+}
+
+fn get_directories() -> io::Result<ReadDir> {
+    std::fs::read_dir(get_directory_path())
+}
+
 fn main() -> Result<(), IoError> {
     env_logger::init();
 
@@ -37,64 +58,60 @@ fn main() -> Result<(), IoError> {
     let mut first_run = true;
 
     loop {
-        // Handle napping at first run
-        if first_run {
-            first_run = false;
-        } else {
-            take_a_nap(config_data.sleep_time);
-        }
+        handle_loop_start(&mut first_run, config_data.sleep_time.clone());
+        let directories = get_directories();
 
-        let dir_path = format!(
-            "{}/.config/zlorbrs/configs",
-            std::env::home_dir().unwrap().to_str().unwrap()
-        );
-        let directories = std::fs::read_dir(dir_path);
-        if directories.is_err() {
-            error!("There are no configuration files created yet");
+        if let Err(_) = directories {
             continue;
         }
 
-        directories.unwrap().for_each(|item_wrap| {
-            let item = item_wrap.unwrap();
-            let file_contents =
-                fs::read_to_string(format!("{}/config.json", item.path().to_str().unwrap()))
-                    .unwrap();
-            let config_json = serde_json::from_str::<Config>(&file_contents).unwrap();
+        directories = directories.unwrap();
 
-            info!(" "); // this just makes logging easier to read
-            info!("================ {} ===============", config_json.name);
+        if let Ok(dirs) = directories {
+            dirs.for_each(|item_wrap| {
+                let item = item_wrap.unwrap();
+                let file_contents =
+                    fs::read_to_string(format!("{}/config.json", item.path().to_str().unwrap()))
+                        .unwrap();
+                let config_json = serde_json::from_str::<Config>(&file_contents).unwrap();
 
-            let repo = Repository::open(config_json.clone().path).expect("Failed to open repo");
+                info!(" "); // this just makes logging easier to read
+                info!("================ {} ===============", config_json.name);
 
-            // ======= Fetching ==========
-            // fast forward any changes if there is one
-            let local_branch = repo
-                .find_branch(&config_json.branch, BranchType::Local)
-                .expect("Local branch not found");
-            let local_iod: Oid = local_branch
-                .get()
-                .target()
-                .expect("Local branch has no target");
-            debug!("before iod: {local_iod}");
+                let repo = Repository::open(config_json.clone().path).expect("Failed to open repo");
 
-            let _ = fast_forward(&repo, &config_json);
+                // ======= Fetching ==========
+                // fast forward any changes if there is one
+                let local_branch = repo
+                    .find_branch(&config_json.branch, BranchType::Local)
+                    .expect("Local branch not found");
+                let local_iod: Oid = local_branch
+                    .get()
+                    .target()
+                    .expect("Local branch has no target");
+                debug!("before iod: {local_iod}");
 
-            let remote_ref = repo
-                .resolve_reference_from_short_name(&format!("origin/{}", config_json.branch))
-                .expect("Remote ref not found");
-            let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
-            debug!("remote iod: {remote_iod}");
-            // ======= END ==========
+                let _ = fast_forward(&repo, &config_json);
 
-            let dist_dir_exists = match std::fs::read_dir(format!("{}/dist", config_json.path)) {
-                Ok(_) => true,
-                Err(_) => false,
-            };
+                let remote_ref = repo
+                    .resolve_reference_from_short_name(&format!("origin/{}", config_json.branch))
+                    .expect("Remote ref not found");
+                let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
+                debug!("remote iod: {remote_iod}");
+                // ======= END ==========
 
-            if !dist_dir_exists || local_iod != remote_iod {
-                kick_off_build(&config_json);
-            }
-        });
+                let dist_dir_exists = match std::fs::read_dir(format!("{}/dist", config_json.path))
+                {
+                    Ok(_) => true,
+                    Err(_) => false,
+                };
+
+                if !dist_dir_exists || local_iod != remote_iod {
+                    kick_off_build(&config_json);
+                }
+            });
+        }
+        // directories.unwrap().for_each(|item_wrap| {});
     }
 }
 
