@@ -3,7 +3,7 @@ Description=Zlorbrs Daemon
 After=network.target
 
 [Service]
-ExecStart=zlorbrs-service
+ExecStart=/usr/bin/zlorbrs-service
 Type=simple
 Restart=always
 Environment="RUST_LOG=zlorbrs_service"
