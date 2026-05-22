@@ -79,3 +79,7 @@ zlorbrs will automatically keep your repositories updated and built, saving you 
 
 ## 🤝 Contributing
 Want to contribute? Check the System Architecture and Workspace Structure for details. Pull requests and feedback are welcome!
+
+## Roadmap
+- [ ] watch ctl flag that triggers journalctl log watcher
+- [ ] web output ctl flag that spins up web server
