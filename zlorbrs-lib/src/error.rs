@@ -1,5 +1,7 @@
 use std::{error::Error, fmt, path::PathBuf};
 
+use log::error;
+
 #[derive(Debug)]
 pub enum ZlorbError {
     Io(std::io::Error),
@@ -10,21 +12,29 @@ pub enum ZlorbError {
     FileNotFOund(PathBuf),
     PermissionDenied(String),
     SerializationError(String),
+    Git(git2::Error),
     Other(String),
 }
 
+impl ZlorbError {
+    pub fn print(&self) {
+        error!("{}", self)
+    }
+}
+
 impl fmt::Display for ZlorbError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ZlorbError::Io(error) => write!(f, "IO error: {}", error),
-            ZlorbError::HomeDirNotFound => write!(f, "Could not find home directory"),
-            ZlorbError::ConfigNotFound(path) => write!(f, "Config file not found: {:?}", path),
-            ZlorbError::ConfigParseError(msg) => write!(f, "Failed to parse config: {}", msg),
-            ZlorbError::InvalidConfig(msg) => write!(f, "Invalid configuration: {}", msg),
-            ZlorbError::FileNotFOund(path) => write!(f, "File not found: {:?}", path),
-            ZlorbError::PermissionDenied(path) => write!(f, "Permission denied: {:?}", path),
-            ZlorbError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
-            ZlorbError::Other(msg) => write!(f, "Other error occured: {}", msg),
+            ZlorbError::Io(error) => Ok(error!("IO error: {error}")),
+            ZlorbError::HomeDirNotFound => Ok(error!("Could not find home directory")),
+            ZlorbError::ConfigNotFound(path) => Ok(error!("Config file not found: {path:?}")),
+            ZlorbError::ConfigParseError(msg) => Ok(error!("Failed to parse config: {msg}")),
+            ZlorbError::InvalidConfig(msg) => Ok(error!("Invalid configuration: {msg}")),
+            ZlorbError::FileNotFOund(path) => Ok(error!("File not found: {path:?}")),
+            ZlorbError::PermissionDenied(path) => Ok(error!("Permission denied: {path:?}")),
+            ZlorbError::SerializationError(msg) => Ok(error!("Serialization error: {msg}")),
+            ZlorbError::Other(msg) => Ok(error!("Other error occured: {msg}")),
+            ZlorbError::Git(git) => Ok(error!("Recieved git error: {git}")),
         }
     }
 }
