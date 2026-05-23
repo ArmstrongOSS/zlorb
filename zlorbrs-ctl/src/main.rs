@@ -22,7 +22,7 @@ enum Commands {
 
 fn main() {
     // when running the program, use RUST_LOG with (error, info, debug)
-    env_logger::init();
+    colog::init();
 
     let args = Args::parse();
 
