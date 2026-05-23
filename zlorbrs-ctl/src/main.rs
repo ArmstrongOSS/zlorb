@@ -18,6 +18,7 @@ enum Commands {
     Add,
     List,
     Start,
+    Watch,
 }
 
 fn main() {
@@ -31,5 +32,6 @@ fn main() {
         Commands::List => repo::list(),
         Commands::Start => daemon::start(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
+        Commands::Watch => repo::watch(),
     }
 }
