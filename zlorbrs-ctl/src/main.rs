@@ -11,13 +11,18 @@ struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
+    /// remove a repo from the configs watched by the daemon @ ~/.config/zlorbrs/configs
     Remove {
         #[arg(short, long)]
         repo_name: String,
     },
+    /// adds a repo to the configs watched by the daemon @ ~/.config/zlorbrs/configs
     Add,
+    /// list repos currently watched by the daemon @ ~/.config/zlorbrs/configs
     List,
+    /// starts the repo watch daemon
     Start,
+    /// runs a journalctl watcher to see realtime logs
     Watch,
 }
 
@@ -30,7 +35,7 @@ fn main() {
     match args.cmd {
         Commands::Add => repo::add(),
         Commands::List => repo::list(),
-        Commands::Start => daemon::start(),
+        Commands::Start => daemon::start().unwrap(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
         Commands::Watch => repo::watch(),
     }
