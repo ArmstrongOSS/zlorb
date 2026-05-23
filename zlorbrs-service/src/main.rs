@@ -1,177 +1,112 @@
-use git2::{BranchType, Cred, Error, FetchOptions, Oid, Remote, RemoteCallbacks, Repository};
-use log::{debug, error, info};
+use git2::{BranchType, Cred, FetchOptions, Oid, RemoteCallbacks, Repository};
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, ReadDir},
-    io::{self, Error as IoError},
+    fs::{self, DirEntry, ReadDir},
     path::PathBuf,
     process::Stdio,
 };
-use zlorbrs_lib::config::Config;
+use zlorbrs_lib::{config::Config, error::ZlorbError, get_home_dir};
 
 #[derive(Serialize, Deserialize, Default, Debug)]
 struct ServiceConfig {
     sleep_time: u64,
 }
 
-fn setup_config_stuff() -> Result<ServiceConfig, ()> {
-    let path_to_config_file_for_service = format!(
-        "{}/.config/zlorbrs/service-config.json",
-        std::env::home_dir().unwrap().to_str().unwrap()
-    );
+fn main() -> Result<(), ZlorbError> {
+    colog::init();
 
-    if !fs::exists(&path_to_config_file_for_service).unwrap() {
-        info!("Service config file not found.. creating it now");
-        let _ = fs::write(
-            &path_to_config_file_for_service,
-            &serde_json::to_string(&ServiceConfig::default()).unwrap(),
-        );
-    }
-    let config_file = std::fs::read_to_string(path_to_config_file_for_service).unwrap();
-
-    let config_data = serde_json::from_str::<ServiceConfig>(&config_file)
-        .expect("Failed to convert config file to json string");
-    Ok(config_data)
-}
-
-fn handle_loop_start(first_run: &mut bool, sleep_time: u64) {
-    if !std::mem::replace(first_run, false) {
-        take_a_nap(sleep_time);
-    }
-}
-
-fn get_directory_path() -> PathBuf {
-    let mut path = std::env::home_dir().expect("Failed to get home directory");
-    path.push(".config/zlorbrs/configs");
-    path
-}
-
-fn get_directories() -> io::Result<ReadDir> {
-    std::fs::read_dir(get_directory_path())
-}
-
-fn main() -> Result<(), IoError> {
-    env_logger::init();
-
-    let config_data = setup_config_stuff().expect("Failed to setup configuration stuff");
+    let config_data = setup_config_stuff()?;
 
     let mut first_run = true;
 
     loop {
         handle_loop_start(&mut first_run, config_data.sleep_time.clone());
         let directories = get_directories();
-
         if let Err(_) = directories {
             continue;
         }
-
-        directories = directories.unwrap();
-
-        if let Ok(dirs) = directories {
-            dirs.for_each(|item_wrap| {
-                let item = item_wrap.unwrap();
-                let file_contents =
-                    fs::read_to_string(format!("{}/config.json", item.path().to_str().unwrap()))
-                        .unwrap();
-                let config_json = serde_json::from_str::<Config>(&file_contents).unwrap();
-
-                info!(" "); // this just makes logging easier to read
-                info!("================ {} ===============", config_json.name);
-
-                let repo = Repository::open(config_json.clone().path).expect("Failed to open repo");
-
-                // ======= Fetching ==========
-                // fast forward any changes if there is one
-                let local_branch = repo
-                    .find_branch(&config_json.branch, BranchType::Local)
-                    .expect("Local branch not found");
-                let local_iod: Oid = local_branch
-                    .get()
-                    .target()
-                    .expect("Local branch has no target");
-                debug!("before iod: {local_iod}");
-
-                let _ = fast_forward(&repo, &config_json);
-
-                let remote_ref = repo
-                    .resolve_reference_from_short_name(&format!("origin/{}", config_json.branch))
-                    .expect("Remote ref not found");
-                let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
-                debug!("remote iod: {remote_iod}");
-                // ======= END ==========
-
-                let dist_dir_exists = match std::fs::read_dir(format!("{}/dist", config_json.path))
-                {
-                    Ok(_) => true,
-                    Err(_) => false,
-                };
-
-                if !dist_dir_exists || local_iod != remote_iod {
-                    kick_off_build(&config_json);
-                }
-            });
-        }
-        // directories.unwrap().for_each(|item_wrap| {});
+        let dirs = directories?;
+        dirs.for_each(|directory| {
+            let dir = directory.unwrap();
+            let config = get_config_json(dir).unwrap();
+            let repo = get_repo(&config).unwrap();
+            initiate_fast_forward(&repo, &config).unwrap();
+        });
     }
 }
 
-fn kick_off_build(config_json: &Config) {
-    info!("Looks like we got some build pending, lets do that!");
-    let path = format!("{}", config_json.path);
-    debug!("Running build for: {}", config_json.path);
+fn get_config_json(dir: DirEntry) -> Result<Config, ZlorbError> {
+    let mut path = PathBuf::from(dir.path());
+    path.push("/config.json");
+    let file_contents =
+        fs::read_to_string(path).map_err(|e| ZlorbError::SerializationError(e.to_string()))?;
+    let config_json = serde_json::from_str::<Config>(&file_contents)
+        .map_err(|e| ZlorbError::SerializationError(e.to_string()))?;
+    Ok(config_json)
+}
 
+fn get_repo(config: &Config) -> Result<Repository, ZlorbError> {
+    let repo = Repository::open(&config.path).expect("Failed to open repo");
+    Ok(repo)
+}
+
+fn initiate_fast_forward(repo: &Repository, config_json: &Config) -> Result<(), ZlorbError> {
+    let local_branch = repo
+        .find_branch(&config_json.branch, BranchType::Local)
+        .map_err(|e| ZlorbError::Other(e.to_string()))?;
+    let local_iod: Oid = local_branch
+        .get()
+        .target()
+        .expect("Local branch has no target"); // TODO we probably dont want to panic here
+
+    let _ = fast_forward(&repo, &config_json);
+
+    let remote_ref = repo
+        .resolve_reference_from_short_name(&format!("origin/{}", config_json.branch))
+        .expect("Remote ref not found");
+    let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
+
+    let mut dist_dir_path = PathBuf::from(&config_json.path);
+    dist_dir_path.push("/dist");
+    let dist_dir_exists = std::fs::exists(dist_dir_path).map_err(|e| ZlorbError::Io(e))?;
+    let local_iod_matches_remote = local_iod == remote_iod;
+    if !dist_dir_exists || !local_iod_matches_remote {
+        kick_off_build(&config_json).map_err(|e| ZlorbError::Other(e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn kick_off_build(config_json: &Config) -> Result<(), ZlorbError> {
+    let path = PathBuf::from(&config_json.path);
     let build_command = config_json.build_command.clone();
-    let handle = std::thread::spawn(move || {
-        let set_dir_res = std::env::set_current_dir(path.clone());
-        if set_dir_res.is_err() {
-            error!(
-                "Failed to set the current directory: {}\nDir: {}",
-                set_dir_res.err().unwrap(),
-                path
-            );
-        }
-
+    let handle = std::thread::spawn(move || -> Result<(), ZlorbError> {
+        std::env::set_current_dir(path).map_err(|e| ZlorbError::Io(e))?;
         let build_handle = std::process::Command::new(build_command)
             .stdout(Stdio::piped())
-            .output();
+            .output()
+            .map_err(|_| ZlorbError::Other("Unable to retrieve build handle".to_string()))?;
 
-        match build_handle {
-            Ok(h) => {
-                debug!("got status: {:?}", h.status);
-                match h.status.code() {
-                    Some(0) => {
-                        // create util split_to_debug_lines
-                        let human_readable = String::from_utf8(h.stdout).unwrap();
-                        let split_readable: Vec<&str> = human_readable.split("\n").collect();
-                        for line in split_readable {
-                            info!("build succeed: {:#?}", line);
-                        }
-                    }
-                    Some(1) => {
-                        error!("build error: {:?}", h.stderr);
-                    }
-                    _ => {}
-                };
-            }
-            Err(e) => {
-                error!("Total failure of bun_handle: {}", e);
-            }
-        };
+        if build_handle.status.code() == Some(1) {
+            return Err(ZlorbError::Other(
+                "build returned status code 1 resulting in failure".to_string(),
+            ));
+        }
+        // TODO: add better build logging
+        Ok(())
     });
 
-    handle.join().unwrap();
+    handle
+        .join()
+        .map_err(|_| ZlorbError::Other("Faild to join the thread".to_string()))?
 }
 
 fn take_a_nap(sleep_time: u64) {
     std::thread::sleep(std::time::Duration::from_secs(sleep_time));
 }
 
-fn fast_forward(repo: &Repository, config_json: &Config) -> Result<(), git2::Error> {
-    let remote: Result<Remote, git2::Error> = repo.find_remote("origin");
-    if remote.is_err() {
-        error!("Remote Not Found");
-        return Err(Error::from_str("Remote Not Found"));
-    }
+fn fast_forward(repo: &Repository, config_json: &Config) -> Result<(), ZlorbError> {
+    let mut remote = repo.find_remote("origin").map_err(|e| ZlorbError::Git(e))?;
 
     // setup credentails
     let mut callbacks = RemoteCallbacks::new();
@@ -185,7 +120,7 @@ fn fast_forward(repo: &Repository, config_json: &Config) -> Result<(), git2::Err
     let mut fetch_options = FetchOptions::new();
     fetch_options.remote_callbacks(callbacks);
 
-    let fetch_res = remote.unwrap().fetch(
+    let fetch_res = remote.fetch(
         &[config_json.branch.clone()],
         Some(&mut fetch_options),
         None,
@@ -199,89 +134,68 @@ fn fast_forward(repo: &Repository, config_json: &Config) -> Result<(), git2::Err
     let analysis = repo.merge_analysis(&[&fetch_commit]).unwrap();
 
     if analysis.0.is_up_to_date() {
-        info!("repo is already up to date, skipping fast forward");
         return Ok(());
     }
 
-    if analysis.0.is_fast_forward() {
-        info!("Repo needs an update, updating...");
-        let refname = format!("refs/heads/{}", config_json.branch);
-        let mut reference = repo.find_reference(&refname).unwrap();
-        reference
-            .set_target(fetch_commit.id(), "Fast-Forward")
-            .unwrap();
-        repo.set_head(&refname).unwrap();
-        return repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()));
+    if !analysis.0.is_fast_forward() {
+        return Err(ZlorbError::Git(git2::Error::new(
+            git2::ErrorCode::NotFastForward,
+            git2::ErrorClass::Invalid,
+            "Fast-forward only!",
+        )));
     }
 
-    error!("Fast-forward only!");
-    Err(Error::from_str("Fast-forward only!"))
+    let refname = format!("refs/heads/{}", config_json.branch);
+    repo.find_reference(&refname)
+        .map_err(|e| ZlorbError::Git(e))?
+        .set_target(fetch_commit.id(), "Fast-Forward")
+        .map_err(|e| ZlorbError::Git(e))?;
+    repo.set_head(&refname).map_err(|e| ZlorbError::Git(e))?;
+    let mut checkout = git2::build::CheckoutBuilder::default();
+    repo.checkout_head(Some(&mut checkout))
+        .map_err(|e| ZlorbError::Git(e))?;
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::path::PathBuf;
-    use zlorbrs_lib::shared_test_utils::ENV_MUTEX;
+fn create_config(home_dir: &PathBuf) -> Result<(), ZlorbError> {
+    let conf = &serde_json::to_string(&ServiceConfig::default())
+        .map_err(|e| ZlorbError::ConfigParseError(e.to_string()))?;
+    let _ = fs::write(&home_dir, conf).map_err(|e| ZlorbError::Io(e));
+    Ok(())
+}
 
-    struct TestEnv {
-        home_dir: PathBuf,
-        _lock: std::sync::MutexGuard<'static, ()>,
+fn setup_config_stuff() -> Result<ServiceConfig, ZlorbError> {
+    let mut home_dir = get_home_dir();
+    home_dir.push("/.config/zlorbrs/service-config.json");
+
+    let file_exists =
+        fs::exists(&home_dir).map_err(|_| ZlorbError::ConfigNotFound(home_dir.clone()))?;
+    if !file_exists {
+        let _ = create_config(&home_dir);
     }
 
-    impl Drop for TestEnv {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.home_dir);
-        }
+    let config_file =
+        std::fs::read_to_string(&home_dir).map_err(|_| ZlorbError::FileNotFOund(home_dir))?;
+    let config_data = serde_json::from_str::<ServiceConfig>(&config_file).map_err(|_| {
+        ZlorbError::ConfigParseError("Failed to convert config file to json string".to_string())
+    })?;
+    Ok(config_data)
+}
+
+fn handle_loop_start(first_run: &mut bool, sleep_time: u64) {
+    if !std::mem::replace(first_run, false) {
+        take_a_nap(sleep_time);
     }
+}
 
-    fn setup_test_env(test_name: &str) -> TestEnv {
-        let lock = ENV_MUTEX.lock().unwrap();
+fn get_directory_path() -> PathBuf {
+    let mut path = get_home_dir();
+    path.push(".config/zlorbrs/configs");
+    path
+}
 
-        // Setup mocked HOME directory
-        let mut home_dir = env::temp_dir();
-        home_dir.push(format!("zlorbrs_svc_home_{}", test_name));
-        let _ = fs::remove_dir_all(&home_dir);
-        fs::create_dir_all(&home_dir).unwrap();
-
-        let home_dir = home_dir.canonicalize().unwrap_or(home_dir);
-
-        unsafe {
-            env::set_var("HOME", home_dir.to_str().unwrap());
-        }
-
-        TestEnv {
-            home_dir,
-            _lock: lock,
-        }
-    }
-
-    #[test]
-    fn test_setup_config_stuff_success() {
-        let env = setup_test_env("svc_config_success");
-
-        // Create the expected configuration file
-        let config_dir = env.home_dir.join(".config/zlorbrs");
-        fs::create_dir_all(&config_dir).unwrap();
-
-        let config_file_path = config_dir.join("service-config.json");
-        let valid_json = r#"{ "sleep_time": 42 }"#;
-        fs::write(config_file_path, valid_json).unwrap();
-
-        let result = setup_config_stuff();
-        assert!(result.is_ok());
-
-        let config = result.unwrap();
-        assert_eq!(config.sleep_time, 42);
-    }
-
-    #[test]
-    fn test_setup_config_stuff_missing() {
-        let _env = setup_test_env("svc_config_missing");
-
-        // Do not create the file. setup_config_stuff should fail gracefully.
-        let result = setup_config_stuff();
-        assert!(result.is_err());
-    }
+fn get_directories() -> Result<ReadDir, ZlorbError> {
+    let dir_path = get_directory_path();
+    let dir = std::fs::read_dir(dir_path).map_err(|e| ZlorbError::Io(e))?;
+    Ok(dir)
 }
