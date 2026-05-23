@@ -3,15 +3,31 @@ use std::{
     env,
     fs::{self, ReadDir},
     iter::Enumerate,
+    process,
 };
-use zlorbrs_lib::{config::Config, get_home_dir};
+use zlorbrs_lib::{config::Config, error::ZlorbError, get_home_dir};
 
-/// .
-///
-/// # Removes a repo
-///
-/// Looks in the repo config directory and if `repo_name` is
-/// found, will attempt to delete  the repo config
+pub(crate) fn watch() {
+    let out = process::Command::new("journalctl")
+        .arg("-f")
+        .arg("-u")
+        .arg("zlorbrs")
+        .status()
+        .map_err(|e| ZlorbError::Io(e));
+    match out {
+        Ok(status) => {
+            if status.success() {
+                println!("End")
+            } else {
+                println!("End: Fail")
+            }
+        }
+        Err(e) => {
+            e.print();
+        }
+    }
+}
+
 pub(crate) fn remove(repo_name: String) {
     let repos = self::get_all();
     if repos.is_none() {
@@ -58,24 +74,18 @@ pub(crate) fn remove(repo_name: String) {
     };
 }
 
-/// .
-///
-/// # Panics
-///
-/// Panics if .
 pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
-    let home_dir = get_home_dir();
+    let mut home_dir = get_home_dir();
+    home_dir.push("/.config/zlorbrs/configs");
 
-    let config_dir = format!("{}/.config/zlorbrs/configs", home_dir);
-
-    if let Ok(dir) = fs::read_dir(config_dir.clone()) {
+    if let Ok(dir) = fs::read_dir(home_dir.clone()) {
         return Some(dir.enumerate());
     }
 
     error!("Config directory doesnt exist. Creating it now...");
-    let create_dir_results = fs::create_dir_all(config_dir.clone());
+    let create_dir_results = fs::create_dir_all(home_dir.clone());
     if let Ok(_) = create_dir_results {
-        let files = fs::read_dir(config_dir);
+        let files = fs::read_dir(home_dir);
         if files.is_err() {
             error!(
                 "Failed to create config directory for reason: {}",
@@ -94,11 +104,6 @@ pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
     panic!("Exiting due to previous error")
 }
 
-/// .
-///
-/// # Panics
-///
-/// Panics if .
 pub(crate) fn add() {
     let current_dir_pathbuf = env::current_dir().unwrap();
 
@@ -129,11 +134,6 @@ pub(crate) fn add() {
     let _ = Config::load(String::from(dir_name.unwrap().to_str().unwrap()));
 }
 
-/// .
-///
-/// # Panics
-///
-/// Panics if .
 pub(crate) fn list() {
     let repos = self::get_all();
     if repos.is_none() {
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_get_all_empty() {
         let (tmp_dir, _lock) = setup_test_env("get_all_empty");
-        
+
         let all = get_all();
         assert!(all.is_some());
         let all = all.unwrap();
@@ -192,17 +192,17 @@ mod tests {
     #[test]
     fn test_remove_existing() {
         let (tmp_dir, _lock) = setup_test_env("remove_existing");
-        
-        let home_dir = get_home_dir();
-        let config_dir = format!("{}/.config/zlorbrs/configs/test_repo", home_dir);
-        fs::create_dir_all(&config_dir).unwrap();
-        fs::write(format!("{}/config.json", config_dir), "{}").unwrap();
 
-        assert!(fs::metadata(&config_dir).is_ok());
+        let mut home_dir = get_home_dir();
+        home_dir.push("/.config/zlorbrs/configs/test_repo");
+        fs::create_dir_all(&home_dir).unwrap();
+        fs::write(format!("{}/config.json", home_dir), "{}").unwrap();
+
+        assert!(fs::metadata(&home_dir).is_ok());
 
         remove(String::from("test_repo"));
 
-        assert!(fs::metadata(&config_dir).is_err());
+        assert!(fs::metadata(&home_dir).is_err());
 
         teardown_test_env(tmp_dir);
     }
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_remove_non_existent() {
         let (tmp_dir, _lock) = setup_test_env("remove_non_existent");
-        
+
         // This won't panic because remove handles missing configurations
         remove(String::from("does_not_exist"));
 
