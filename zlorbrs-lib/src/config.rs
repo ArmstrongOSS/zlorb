@@ -88,8 +88,8 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     // use std::sync::Mutex; // removed
-    use git2::Repository;
-    use crate::shared_test_utils::ENV_MUTEX; // added
+    use crate::shared_test_utils::ENV_MUTEX;
+    use git2::Repository; // added
 
     // static TEST_MUTEX: Mutex<()> = Mutex::new(()); // removed
 
@@ -110,13 +110,13 @@ mod tests {
 
     fn setup_test_env(test_name: &str) -> TestEnv {
         let lock = ENV_MUTEX.lock().unwrap();
-        
+
         // 1. Setup mocked HOME directory
         let mut home_dir = env::temp_dir();
         home_dir.push(format!("zlorbrs_home_{}", test_name));
         let _ = fs::remove_dir_all(&home_dir);
         fs::create_dir_all(&home_dir).unwrap();
-        
+
         unsafe {
             env::set_var("HOME", home_dir.to_str().unwrap());
         }
@@ -126,13 +126,13 @@ mod tests {
         project_dir.push(format!("zlorbrs_project_{}", test_name));
         let _ = fs::remove_dir_all(&project_dir);
         fs::create_dir_all(&project_dir).unwrap();
-        
+
         let home_dir = home_dir.canonicalize().unwrap_or(home_dir);
         let project_dir = project_dir.canonicalize().unwrap_or(project_dir);
-        
+
         // 3. Initialize a git repository so git2::Repository::open succeeds
         let repo = Repository::init(&project_dir).unwrap();
-        
+
         // Create an initial commit so we have a branch (usually 'main' or 'master')
         let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
         let tree_id = repo.index().unwrap().write_tree().unwrap();
@@ -144,7 +144,8 @@ mod tests {
             "Initial commit",
             &tree,
             &[],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 4. Change current_dir to our mocked project
         let original_dir = env::current_dir().unwrap();
@@ -180,11 +181,20 @@ mod tests {
 
         let saved_json = Config::save(repo_name.clone());
 
-        let expected_config_dir = env.home_dir.join(".config/zlorbrs/configs").join(&repo_name);
+        let expected_config_dir = env
+            .home_dir
+            .join(".config/zlorbrs/configs")
+            .join(&repo_name);
         let expected_file_path = expected_config_dir.join("config.json");
 
-        assert!(fs::metadata(&expected_config_dir).is_ok(), "Config directory was not created");
-        assert!(fs::metadata(&expected_file_path).is_ok(), "config.json was not created");
+        assert!(
+            fs::metadata(&expected_config_dir).is_ok(),
+            "Config directory was not created"
+        );
+        assert!(
+            fs::metadata(&expected_file_path).is_ok(),
+            "config.json was not created"
+        );
 
         let file_contents = fs::read_to_string(&expected_file_path).unwrap();
         assert_eq!(saved_json, file_contents);
@@ -204,7 +214,7 @@ mod tests {
         // Then try loading it
         let load_result = Config::load(repo_name);
         assert!(load_result.is_ok());
-        
+
         let loaded_json = load_result.unwrap();
         let config: Config = serde_json::from_str(&loaded_json).unwrap();
         assert_eq!(config.name, "test_repo");
@@ -216,7 +226,10 @@ mod tests {
         let env = setup_test_env("config_load_missing");
         let repo_name = String::from("test_repo");
 
-        let expected_config_dir = env.home_dir.join(".config/zlorbrs/configs").join(&repo_name);
+        let expected_config_dir = env
+            .home_dir
+            .join(".config/zlorbrs/configs")
+            .join(&repo_name);
         let expected_file_path = expected_config_dir.join("config.json");
 
         // Ensure missing before load
@@ -227,7 +240,10 @@ mod tests {
         assert!(load_result.is_ok());
 
         // Verify it was created
-        assert!(fs::metadata(&expected_file_path).is_ok(), "config.json should be created by load()");
+        assert!(
+            fs::metadata(&expected_file_path).is_ok(),
+            "config.json should be created by load()"
+        );
 
         let loaded_json = load_result.unwrap();
         let config: Config = serde_json::from_str(&loaded_json).unwrap();

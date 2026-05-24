@@ -1,5 +1,5 @@
 use git2::{BranchType, Cred, FetchOptions, Oid, RemoteCallbacks, Repository};
-use log::{error, info};
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, DirEntry, ReadDir},
@@ -8,18 +8,19 @@ use std::{
 };
 use zlorbrs_lib::{config::Config, error::ZlorbError, get_home_dir};
 
+pub mod service;
+
 #[derive(Serialize, Deserialize, Default, Debug)]
 struct ServiceConfig {
     sleep_time: u64,
+    username: String,
+    token: String,
 }
 
 fn main() -> Result<(), ZlorbError> {
     colog::init();
-
     let config_data = setup_config_stuff()?;
-
     let mut first_run = true;
-
     loop {
         handle_loop_start(&mut first_run, config_data.sleep_time.clone());
         let directories = get_directories();
@@ -92,7 +93,6 @@ fn kick_off_build(config_json: &Config) -> Result<(), ZlorbError> {
                 "build returned status code 1 resulting in failure".to_string(),
             ));
         }
-        // TODO: add better build logging
         Ok(())
     });
 
@@ -110,12 +110,7 @@ fn fast_forward(repo: &Repository, config_json: &Config) -> Result<(), ZlorbErro
 
     // setup credentails
     let mut callbacks = RemoteCallbacks::new();
-    callbacks.credentials(|_, _, _| {
-        Cred::userpass_plaintext(
-            // TODO: use credential helper instead
-            "USERNAME", "PASSWORD",
-        )
-    });
+    callbacks.credentials(|_, _, _| Cred::userpass_plaintext());
     // apply credentials to fetch options
     let mut fetch_options = FetchOptions::new();
     fetch_options.remote_callbacks(callbacks);
@@ -165,17 +160,20 @@ fn create_config(home_dir: &PathBuf) -> Result<(), ZlorbError> {
 }
 
 fn setup_config_stuff() -> Result<ServiceConfig, ZlorbError> {
-    let mut home_dir = get_home_dir();
-    home_dir.push("/.config/zlorbrs/service-config.json");
-
+    let home_dir = get_home_dir().join("/.config/zlorbrs/service-config.json");
     let file_exists =
         fs::exists(&home_dir).map_err(|_| ZlorbError::ConfigNotFound(home_dir.clone()))?;
+
     if !file_exists {
         let _ = create_config(&home_dir);
     }
 
-    let config_file =
-        std::fs::read_to_string(&home_dir).map_err(|_| ZlorbError::FileNotFOund(home_dir))?;
+    read_config_file(&home_dir)
+}
+
+fn read_config_file(home_dir: &PathBuf) -> Result<ServiceConfig, ZlorbError> {
+    let config_file = std::fs::read_to_string(&home_dir)
+        .map_err(|_| ZlorbError::FileNotFOund(home_dir.clone()))?;
     let config_data = serde_json::from_str::<ServiceConfig>(&config_file).map_err(|_| {
         ZlorbError::ConfigParseError("Failed to convert config file to json string".to_string())
     })?;
@@ -189,9 +187,7 @@ fn handle_loop_start(first_run: &mut bool, sleep_time: u64) {
 }
 
 fn get_directory_path() -> PathBuf {
-    let mut path = get_home_dir();
-    path.push(".config/zlorbrs/configs");
-    path
+    get_home_dir().join(".config/zlorbrs/configs")
 }
 
 fn get_directories() -> Result<ReadDir, ZlorbError> {

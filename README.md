@@ -84,3 +84,4 @@ Want to contribute? Check the System Architecture and Workspace Structure for de
 - [ ] watch ctl flag that triggers journalctl log watcher
 - [ ] web output ctl flag that spins up web server
 - [ ] benchmark to investigate which is more performant (git pull | git fetch -> pull when needed)
+- [ ] need to load configs into memory so daemon doesnt need to keep reading file system every iteration
