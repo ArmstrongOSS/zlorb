@@ -1,5 +1,5 @@
 mod utils;
-use crate::utils::{daemon, repo};
+use crate::utils::{daemon::DaemonManager, repo};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -35,7 +35,7 @@ fn main() {
     match args.cmd {
         Commands::Add => repo::add(),
         Commands::List => repo::list(),
-        Commands::Start => daemon::start().unwrap(),
+        Commands::Start => DaemonManager::start().unwrap(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
         Commands::Watch => repo::watch(),
     }
