@@ -1,29 +1,44 @@
-use std::process::{self, Command};
-
-use log::{error, info};
+use log::info;
+use std::process::{Command, ExitStatus};
 use zlorbrs_lib::error::ZlorbError;
 
-pub(crate) fn start() -> Result<(), ZlorbError> {
-    let mut _output = Command::new("systemctl")
-        .args(&["is-active", "--quiet", "zlorbrs"])
-        .status()
-        .map_err(|e| ZlorbError::Io(e))?;
-    let is_running = _output.success();
-    if !is_running {
-        info!("Starting the daemon");
-        _output = Command::new("systemctl")
-            .args(&["start", "zlorbrs"])
-            .status()
-            .map_err(|e| ZlorbError::Io(e))?;
-        info!("...Started");
-    } else {
-        info!("Daemon already running, restarting it");
-        _output = Command::new("systemctl")
-            .args(&["restart", "zlorbrs"])
-            .status()
-            .map_err(|e| ZlorbError::Io(e))?;
-        info!("...Restarted");
+/// Responsible for starting/stopping/restarting the zlorb service daemon
+pub struct DaemonManager {}
+impl DaemonManager {
+    pub fn start() -> Result<(), ZlorbError> {
+        let out_status = DaemonManager::run_process_check()?;
+        let is_running = out_status.success();
+        match is_running {
+            true => DaemonManager::run_service_start_cmd()?,
+            false => DaemonManager::run_service_restart_cmd()?,
+        };
+        Ok(())
     }
 
-    Ok(())
+    fn run_process_check() -> Result<ExitStatus, ZlorbError> {
+        Command::new("systemctl")
+            .args(&["is-active", "--quiet", "zlorbrs"])
+            .status()
+            .map_err(|e| ZlorbError::Io(e))
+    }
+
+    fn run_service_start_cmd() -> Result<ExitStatus, ZlorbError> {
+        info!("Starting the daemon");
+        let out = Command::new("systemctl")
+            .args(&["start", "zlorbrs"])
+            .status()
+            .map_err(|e| ZlorbError::Io(e));
+        info!("...Started");
+        out
+    }
+
+    fn run_service_restart_cmd() -> Result<ExitStatus, ZlorbError> {
+        info!("Daemon already running, restarting it");
+        let out = Command::new("systemctl")
+            .args(&["restart", "zlorbrs"])
+            .status()
+            .map_err(|e| ZlorbError::Io(e));
+        info!("...Restarted");
+        out
+    }
 }
