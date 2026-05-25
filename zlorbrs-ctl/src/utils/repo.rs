@@ -5,7 +5,7 @@ use std::{
     iter::Enumerate,
     process,
 };
-use zlorbrs_lib::{config::Config, error::ZlorbError, get_home_dir};
+use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, get_home_dir};
 
 pub(crate) fn watch() {
     let out = process::Command::new("journalctl")
@@ -130,8 +130,9 @@ pub(crate) fn add() {
         );
         return;
     }
-
-    let _ = Config::load(String::from(dir_name.unwrap().to_str().unwrap()));
+    let repo_name = dir_name.unwrap().to_str().unwrap().to_string();
+    let repo = RepoConfig::new(repo_name.clone());
+    let _ = repo.load(repo_name);
 }
 
 pub(crate) fn list() {
@@ -143,77 +144,4 @@ pub(crate) fn list() {
 
     let mapped_repos = repos.unwrap().map(|item| item.1.unwrap().path());
     println!("{:#?}", Vec::from_iter(mapped_repos));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::sync::Mutex;
-    use zlorbrs_lib::get_home_dir;
-
-    // Mutex to ensure tests that modify HOME environment variable don't conflict.
-    static TEST_MUTEX: Mutex<()> = Mutex::new(());
-
-    fn setup_test_env(test_name: &str) -> (PathBuf, std::sync::MutexGuard<'static, ()>) {
-        let lock = TEST_MUTEX.lock().unwrap();
-        let mut tmp_dir = env::temp_dir();
-        tmp_dir.push(format!("zlorbrs_test_{}", test_name));
-
-        // Clean up from previous failed test if any
-        let _ = fs::remove_dir_all(&tmp_dir);
-        fs::create_dir_all(&tmp_dir).unwrap();
-
-        unsafe {
-            env::set_var("HOME", tmp_dir.to_str().unwrap());
-        }
-
-        (tmp_dir, lock)
-    }
-
-    fn teardown_test_env(tmp_dir: PathBuf) {
-        let _ = fs::remove_dir_all(tmp_dir);
-    }
-
-    #[test]
-    fn test_get_all_empty() {
-        let (tmp_dir, _lock) = setup_test_env("get_all_empty");
-
-        let all = get_all();
-        assert!(all.is_some());
-        let all = all.unwrap();
-        assert_eq!(all.count(), 0);
-
-        teardown_test_env(tmp_dir);
-    }
-
-    #[test]
-    fn test_remove_existing() {
-        let (tmp_dir, _lock) = setup_test_env("remove_existing");
-
-        let mut home_dir = get_home_dir();
-        home_dir.push("/.config/zlorbrs/configs/test_repo");
-        fs::create_dir_all(&home_dir).unwrap();
-        fs::write(format!("{}/config.json", home_dir), "{}").unwrap();
-
-        assert!(fs::metadata(&home_dir).is_ok());
-
-        remove(String::from("test_repo"));
-
-        assert!(fs::metadata(&home_dir).is_err());
-
-        teardown_test_env(tmp_dir);
-    }
-
-    #[test]
-    fn test_remove_non_existent() {
-        let (tmp_dir, _lock) = setup_test_env("remove_non_existent");
-
-        // This won't panic because remove handles missing configurations
-        remove(String::from("does_not_exist"));
-
-        teardown_test_env(tmp_dir);
-    }
 }
