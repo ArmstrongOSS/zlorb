@@ -36,7 +36,7 @@ impl RepoProcessor {
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
         let has_updates = self.fetch_remote_updates()?;
         if has_updates {
-            self.run_build();
+            self.run_build()?;
         }
         Ok(())
     }

@@ -12,8 +12,9 @@ pub struct ServiceCoordinator {
 
 impl ServiceCoordinator {
     pub fn new(service_config: ServiceConfig) -> Self {
+        // we're frontloading all of our configs on start so theyre kept in memory
+        // reducing the need to hit the file system every iteration
         let configs = ServiceCoordinator::gather_repo_configs().unwrap();
-        info!("CONFIGS: {:?}", configs);
         ServiceCoordinator {
             service_config,
             repo_configs: configs,
@@ -23,6 +24,8 @@ impl ServiceCoordinator {
 
     pub fn run_loop(&mut self) -> Result<(), ZlorbError> {
         loop {
+            // we're throttling the loop so as to not peg
+            // the cpu at max usage
             self.wait_for_run();
             self.run_cycle()?;
         }
@@ -39,23 +42,18 @@ impl ServiceCoordinator {
     }
 
     fn run_cycle(&self) -> Result<(), ZlorbError> {
-        info!("{:?}", self.repo_configs);
         self.repo_configs.iter().for_each(|repo| {
-            let r = repo.update_from_remote();
-            info!("{:?}", r);
+            let _r = repo.update_from_remote();
         });
         Ok(())
     }
 
     fn gather_repo_configs() -> Result<Vec<RepoProcessor>, ZlorbError> {
         let configs_dir_path = get_home_dir().join(".config/zlorbrs/configs");
-        info!("configs dir path: {}", configs_dir_path.to_str().unwrap());
         let configs_dir = std::fs::read_dir(&configs_dir_path)
             .map_err(|_| ZlorbError::ConfigNotFound(configs_dir_path))?;
-        info!("configs dir: {:?}", configs_dir);
         let configs = configs_dir
             .map(|d| {
-                info!("directory: {:?}", d);
                 let dir = d.unwrap();
                 let p = dir.path().join("config.json");
                 let file_contents = read_file_from_filesystem(p).unwrap();
@@ -64,7 +62,6 @@ impl ServiceCoordinator {
                 return repo_processor;
             })
             .collect();
-        info!("configs: {:?}", configs);
 
         Ok(configs)
     }
