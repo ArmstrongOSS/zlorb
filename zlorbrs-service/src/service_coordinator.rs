@@ -1,0 +1,71 @@
+use log::info;
+use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, get_home_dir, read_file_from_filesystem};
+
+use crate::repo_processor::RepoProcessor;
+use crate::service_config::ServiceConfig;
+
+pub struct ServiceCoordinator {
+    service_config: ServiceConfig,
+    repo_configs: Vec<RepoProcessor>,
+    first_run_flag: bool,
+}
+
+impl ServiceCoordinator {
+    pub fn new(service_config: ServiceConfig) -> Self {
+        let configs = ServiceCoordinator::gather_repo_configs().unwrap();
+        info!("CONFIGS: {:?}", configs);
+        ServiceCoordinator {
+            service_config,
+            repo_configs: configs,
+            first_run_flag: true,
+        }
+    }
+
+    pub fn run_loop(&mut self) -> Result<(), ZlorbError> {
+        loop {
+            self.wait_for_run();
+            self.run_cycle()?;
+        }
+    }
+
+    fn wait_for_run(&mut self) {
+        if !self.first_run_flag {
+            std::thread::sleep(std::time::Duration::from_secs(
+                self.service_config.sleep_time,
+            ));
+        } else {
+            self.first_run_flag = false
+        }
+    }
+
+    fn run_cycle(&self) -> Result<(), ZlorbError> {
+        info!("{:?}", self.repo_configs);
+        self.repo_configs.iter().for_each(|repo| {
+            let r = repo.update_from_remote();
+            info!("{:?}", r);
+        });
+        Ok(())
+    }
+
+    fn gather_repo_configs() -> Result<Vec<RepoProcessor>, ZlorbError> {
+        let configs_dir_path = get_home_dir().join(".config/zlorbrs/configs");
+        info!("configs dir path: {}", configs_dir_path.to_str().unwrap());
+        let configs_dir = std::fs::read_dir(&configs_dir_path)
+            .map_err(|_| ZlorbError::ConfigNotFound(configs_dir_path))?;
+        info!("configs dir: {:?}", configs_dir);
+        let configs = configs_dir
+            .map(|d| {
+                info!("directory: {:?}", d);
+                let dir = d.unwrap();
+                let p = dir.path().join("config.json");
+                let file_contents = read_file_from_filesystem(p).unwrap();
+                let repo = serde_json::from_str::<RepoConfig>(&file_contents).unwrap();
+                let repo_processor = RepoProcessor::new(repo);
+                return repo_processor;
+            })
+            .collect();
+        info!("configs: {:?}", configs);
+
+        Ok(configs)
+    }
+}
