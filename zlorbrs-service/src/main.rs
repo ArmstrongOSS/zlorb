@@ -3,7 +3,6 @@ use zlorbrs_lib::error::ZlorbError;
 
 mod build_system_executor;
 mod config_manager;
-mod directory_scanner;
 mod repo_processor;
 mod service_config;
 mod service_coordinator;
