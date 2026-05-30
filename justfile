@@ -14,3 +14,9 @@ install: install-bins install-service
 
 clean:
   cargo clean
+
+service:
+  cargo run -p zlorbrs-service
+
+ctl:
+  cargo run -p zlorbrs-ctl

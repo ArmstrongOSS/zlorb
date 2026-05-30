@@ -1,8 +1,13 @@
 use git2::{
-    AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
-    Reference, Remote, RemoteCallbacks,
+    AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, IntoCString, MergeAnalysis,
+    MergePreference, Oid, Reference, Remote, RemoteCallbacks,
 };
-use std::{fmt::Debug, path::PathBuf, process::Stdio};
+use log::log;
+use std::{
+    fmt::Debug,
+    path::PathBuf,
+    process::{Output, Stdio},
+};
 use zlorbrs_lib::{config::RepoConfig, error::ZlorbError};
 
 pub struct RepoProcessor {
@@ -64,7 +69,33 @@ impl RepoProcessor {
         Ok(self._should_trigger_update(remote_ref, local_oid)?)
     }
 
+    fn pull_node_modules(&self) -> Result<(), ZlorbError> {
+        let p = self.repo_path.to_string_lossy().into_owned();
+        let handle = std::thread::spawn(move || -> Result<Output, ZlorbError> {
+            let package_install_handle = std::process::Command::new("bun")
+                .arg("install")
+                .current_dir(p)
+                .stdout(Stdio::piped())
+                .output()
+                .map_err(|e| ZlorbError::Io(e))?;
+            if !(package_install_handle.stderr.is_empty()) {
+                let err = format!(
+                    "Npm install failed: {}",
+                    String::from_utf8_lossy(&package_install_handle.stderr)
+                );
+                return Err(ZlorbError::Other(err));
+            }
+            Ok(package_install_handle)
+        });
+
+        let h = handle
+            .join()
+            .map_err(|_| ZlorbError::Other("Failed to successfully run install command".into()))?;
+        Ok(())
+    }
+
     fn run_build(&self) -> Result<(), ZlorbError> {
+        let _ = self.pull_node_modules()?;
         let path = self.config.path.clone();
         let build_command = self.config.build_command.clone();
 
@@ -73,8 +104,7 @@ impl RepoProcessor {
             let build_handle = std::process::Command::new(build_command)
                 .stdout(Stdio::piped())
                 .output()
-                .map_err(|_| ZlorbError::Other("Unable to retrieve build handle".to_string()))?;
-
+                .map_err(|e| ZlorbError::Io(e))?;
             if build_handle.status.code() == Some(1) {
                 return Err(ZlorbError::Other(
                     "build returned status code 1 resulting in failure".to_string(),
@@ -83,9 +113,10 @@ impl RepoProcessor {
             Ok(())
         });
 
-        handle
+        let h = handle
             .join()
-            .map_err(|_| ZlorbError::Other("Faild to join the thread".to_string()))?;
+            .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))?;
+
         Ok(())
     }
 

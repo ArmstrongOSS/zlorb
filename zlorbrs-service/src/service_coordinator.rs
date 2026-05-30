@@ -1,9 +1,9 @@
-use log::info;
 use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, get_home_dir, read_file_from_filesystem};
 
 use crate::repo_processor::RepoProcessor;
 use crate::service_config::ServiceConfig;
 
+/// The primary orchestrator. It manages the system's global state and the continuous operation loop.
 pub struct ServiceCoordinator {
     service_config: ServiceConfig,
     repo_configs: Vec<RepoProcessor>,
