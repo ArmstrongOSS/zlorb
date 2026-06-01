@@ -14,6 +14,7 @@ impl ServiceCoordinator {
     pub fn new(service_config: ServiceConfig) -> Self {
         // we're frontloading all of our configs on start so theyre kept in memory
         // reducing the need to hit the file system every iteration
+        // if a repo is added, this service should just be restarted
         let configs = ServiceCoordinator::gather_repo_configs().unwrap();
         ServiceCoordinator {
             service_config,
