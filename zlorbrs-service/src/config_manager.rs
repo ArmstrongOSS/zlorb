@@ -1,10 +1,12 @@
-use std::path::PathBuf;
+use std::{fs::ReadDir, path::PathBuf};
 use zlorbrs_lib::{
-    create_file_with_content, error::ZlorbError, get_home_dir, read_file_from_filesystem,
+    config::RepoConfig, create_file_with_content, error::ZlorbError, get_home_dir,
+    read_file_from_filesystem,
 };
 
-use crate::service_config::ServiceConfig;
+use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 
+#[derive(Default)]
 pub struct ConfigManager {
     home_dir: PathBuf,
 }
@@ -24,6 +26,12 @@ impl ConfigManager {
         Ok(f)
     }
 
+    pub fn initialize_repo_configs(&self) -> Result<ReadDir, ZlorbError> {
+        let p = self.home_dir.join("/.config/zlorbrs/configs");
+        std::fs::create_dir_all(&p).map_err(|e| ZlorbError::Io(e))?;
+        std::fs::read_dir(p).map_err(|e| ZlorbError::Io(e))
+    }
+
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
         let config_file_path = self.home_dir.join(".config/zlorbrs/service-config.json");
         let config_file = read_file_from_filesystem(config_file_path.clone());
@@ -36,6 +44,24 @@ impl ConfigManager {
         serde_json::from_str::<ServiceConfig>(&opened).map_err(|_| {
             ZlorbError::ConfigParseError("Failed to convert config file to json string".to_string())
         })
+    }
+
+    pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
+        let configs_dir_path = get_home_dir().join(".config/zlorbrs/configs");
+        let configs_dir =
+            std::fs::read_dir(&configs_dir_path).or_else(|_| self.initialize_repo_configs())?;
+        let configs = configs_dir
+            .map(|d| {
+                let dir = d.unwrap();
+                let p = dir.path().join("config.json");
+                let file_contents = read_file_from_filesystem(p).unwrap();
+                let repo = serde_json::from_str::<RepoConfig>(&file_contents).unwrap();
+                let repo_processor = RepoProcessor::new(repo);
+                return repo_processor;
+            })
+            .collect();
+
+        Ok(configs)
     }
 
     pub fn load_repo_config(&self, name: String) -> String {
