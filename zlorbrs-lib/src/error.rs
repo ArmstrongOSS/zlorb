@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, path::PathBuf};
 
-use log::error;
+use crate::log::Logger;
 
 #[derive(Debug)]
 pub enum ZlorbError {
@@ -18,23 +18,53 @@ pub enum ZlorbError {
 
 impl ZlorbError {
     pub fn print(&self) {
-        error!("{}", self)
+        Logger::Error(format!("{}", self));
     }
 }
 
 impl fmt::Display for ZlorbError {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ZlorbError::Io(error) => Ok(error!("IO error: {error}")),
-            ZlorbError::HomeDirNotFound => Ok(error!("Could not find home directory")),
-            ZlorbError::ConfigNotFound(path) => Ok(error!("Config file not found: {path:?}")),
-            ZlorbError::ConfigParseError(msg) => Ok(error!("Failed to parse config: {msg}")),
-            ZlorbError::InvalidConfig(msg) => Ok(error!("Invalid configuration: {msg}")),
-            ZlorbError::FileNotFOund(path) => Ok(error!("File not found: {path:?}")),
-            ZlorbError::PermissionDenied(path) => Ok(error!("Permission denied: {path:?}")),
-            ZlorbError::SerializationError(msg) => Ok(error!("Serialization error: {msg}")),
-            ZlorbError::Other(msg) => Ok(error!("Other error occured: {msg}")),
-            ZlorbError::Git(git) => Ok(error!("Recieved git error: {git}")),
+            ZlorbError::Io(error) => {
+                Logger::Error("IO error: {error}".into());
+                Ok(())
+            }
+            ZlorbError::HomeDirNotFound => {
+                Logger::Error("Could not find home directory".into());
+                Ok(())
+            }
+            ZlorbError::ConfigNotFound(path) => {
+                Logger::Error("Config file not found: {path:?}".into());
+                Ok(())
+            }
+            ZlorbError::ConfigParseError(msg) => {
+                Logger::Error("Failed to parse config: {msg}".into());
+                Ok(())
+            },
+            ZlorbError::InvalidConfig(msg) => {
+                Logger::Error("Invalid configuration: {msg}".into());
+                Ok(())
+            },
+            ZlorbError::FileNotFOund(path) => {
+                Logger::Error("File not found: {path:?}".into());
+                Ok(())
+            },
+            ZlorbError::PermissionDenied(path) => {
+                Logger::Error("Permission denied: {path:?}".into());
+                Ok(())
+            },
+            ZlorbError::SerializationError(msg) => {
+                Logger::Error("Serialization error: {msg}".into());
+                Ok(())
+            },
+            ZlorbError::Other(msg) => {
+                Logger::Error("Other error occured: {msg}".into());
+                Ok(())
+            },
+            ZlorbError::Git(git) => {
+                Logger::Error("Recieved git error: {git}".into());
+                Ok(())
+            },
         }
     }
 }
