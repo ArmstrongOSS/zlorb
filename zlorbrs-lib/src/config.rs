@@ -1,7 +1,7 @@
+use serde::{Deserialize, Serialize};
 use std::{fs, io};
 
-use log::info;
-use serde::{Deserialize, Serialize};
+use crate::log::Logger;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RepoConfig {
@@ -37,22 +37,22 @@ impl RepoConfig {
     }
 
     pub fn load(&self, repo_name: String) -> Result<String, io::Error> {
-        info!("Loading config for {}", repo_name);
+        Logger::Info(format!("Loading config for {}", repo_name));
         let mut contents = fs::read_to_string(format!(
             "{}/.config/zlorbrs/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),
             repo_name
         ));
         if contents.is_err() {
-            info!("Theres no config so we need to create one");
+            Logger::Info("Theres no config so we need to create one".into());
             contents = Ok(self.save());
         }
-        info!("Found contents: {:#?}", contents);
+        Logger::Info(format!("Found contents: {:#?}", contents));
         contents
     }
 
     pub fn save(&self) -> String {
-        info!("Generating configuration file. System assumes Bun build script");
+        Logger::Info("Generating configuration file. System assumes Bun build script".into());
         let directory_path = format!(
             "{}/.config/zlorbrs/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),

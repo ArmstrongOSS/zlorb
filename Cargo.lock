@@ -907,7 +907,6 @@ name = "zlorbrs-lib"
 version = "0.1.0"
 dependencies = [
  "git2",
- "log",
  "serde",
  "serde_json",
 ]
