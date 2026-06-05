@@ -18,7 +18,7 @@ pub enum ZlorbError {
 
 impl ZlorbError {
     pub fn print(&self) {
-        Logger::Error(format!("{}", self));
+        Logger::error(format!("{}", self));
     }
 }
 
@@ -26,45 +26,45 @@ impl fmt::Display for ZlorbError {
     fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ZlorbError::Io(error) => {
-                Logger::Error("IO error: {error}".into());
+                Logger::error("IO error: {error}".into());
                 Ok(())
             }
             ZlorbError::HomeDirNotFound => {
-                Logger::Error("Could not find home directory".into());
+                Logger::error("Could not find home directory".into());
                 Ok(())
             }
             ZlorbError::ConfigNotFound(path) => {
-                Logger::Error("Config file not found: {path:?}".into());
+                Logger::error("Config file not found: {path:?}".into());
                 Ok(())
             }
             ZlorbError::ConfigParseError(msg) => {
-                Logger::Error("Failed to parse config: {msg}".into());
+                Logger::error("Failed to parse config: {msg}".into());
                 Ok(())
-            },
+            }
             ZlorbError::InvalidConfig(msg) => {
-                Logger::Error("Invalid configuration: {msg}".into());
+                Logger::error("Invalid configuration: {msg}".into());
                 Ok(())
-            },
+            }
             ZlorbError::FileNotFOund(path) => {
-                Logger::Error("File not found: {path:?}".into());
+                Logger::error("File not found: {path:?}".into());
                 Ok(())
-            },
+            }
             ZlorbError::PermissionDenied(path) => {
-                Logger::Error("Permission denied: {path:?}".into());
+                Logger::error("Permission denied: {path:?}".into());
                 Ok(())
-            },
+            }
             ZlorbError::SerializationError(msg) => {
-                Logger::Error("Serialization error: {msg}".into());
+                Logger::error("Serialization error: {msg}".into());
                 Ok(())
-            },
+            }
             ZlorbError::Other(msg) => {
-                Logger::Error("Other error occured: {msg}".into());
+                Logger::error("Other error occured: {msg}".into());
                 Ok(())
-            },
+            }
             ZlorbError::Git(git) => {
-                Logger::Error("Recieved git error: {git}".into());
+                Logger::error("Recieved git error: {git}".into());
                 Ok(())
-            },
+            }
         }
     }
 }

@@ -1,17 +1,20 @@
-use std::fmt;
+const RED: &str = "\x1b[31m";
+const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const RESET: &str = "\x1b[0m"; // Reset to default
 
-pub enum Logger {
-    Info(String),
-    Debug(String),
-    Error(String),
-}
+pub struct Logger {}
 
-impl fmt::Display for Logger {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Logger::Info(msg) => Ok(println!("[INFO]: {}", msg)),
-            Logger::Debug(msg) => Ok(println!("[DEBUG]: {}", msg)),
-            Logger::Error(msg) => Ok(println!("[ERROR]: {}", msg)),
-        }
+impl Logger {
+    pub fn info(msg: String) {
+        println!("[{}INFO{}]: {}", GREEN, RESET, msg);
+    }
+
+    pub fn error(msg: String) {
+        println!("[{}ERROR{}]: {}", RED, RESET, msg);
+    }
+
+    pub fn debug(msg: String) {
+        println!("[{}DEBUG{}]: {}", YELLOW, RESET, msg);
     }
 }
