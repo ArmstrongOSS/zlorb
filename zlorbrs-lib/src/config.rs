@@ -37,22 +37,22 @@ impl RepoConfig {
     }
 
     pub fn load(&self, repo_name: String) -> Result<String, io::Error> {
-        Logger::Info(format!("Loading config for {}", repo_name));
+        Logger::info(format!("Loading config for {}", repo_name));
         let mut contents = fs::read_to_string(format!(
             "{}/.config/zlorbrs/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),
             repo_name
         ));
         if contents.is_err() {
-            Logger::Info("Theres no config so we need to create one".into());
+            Logger::info("Theres no config so we need to create one".into());
             contents = Ok(self.save());
         }
-        Logger::Info(format!("Found contents: {:#?}", contents));
+        Logger::info(format!("Found contents: {:#?}", contents));
         contents
     }
 
     pub fn save(&self) -> String {
-        Logger::Info("Generating configuration file. System assumes Bun build script".into());
+        Logger::info("Generating configuration file. System assumes Bun build script".into());
         let directory_path = format!(
             "{}/.config/zlorbrs/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),

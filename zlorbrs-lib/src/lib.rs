@@ -10,7 +10,7 @@ pub fn get_home_dir() -> PathBuf {
     let home_dir = match std::env::home_dir() {
         Some(x) => x,
         None => {
-            Logger::Error("Failed to get the home directory".into());
+            Logger::error("Failed to get the home directory".into());
             panic!("Program exited due to previous error");
         }
     };
