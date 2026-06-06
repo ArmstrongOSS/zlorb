@@ -1,4 +1,5 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
+use std::fs;
 use std::{fs::ReadDir, path::PathBuf};
 use zlorbrs_lib::log::Logger;
 use zlorbrs_lib::{
@@ -18,63 +19,69 @@ impl ConfigManager {
         }
     }
     pub fn initialize_default_config(&self) -> Result<String, ZlorbError> {
-        let p = self.home_dir.join("/.config/zlorbrs/service-config.json");
+        let config_path = self.home_dir.join(".config/zlorbrs/service-config.json");
         let c = ServiceConfig::default();
         let f =
             serde_json::to_string(&c).map_err(|e| ZlorbError::SerializationError(e.to_string()))?;
-        create_file_with_content(p, &f)?;
+        create_file_with_content(config_path, &f)?;
         Ok(f)
     }
 
     pub fn initialize_repo_configs(&self) -> Result<ReadDir, ZlorbError> {
-        let p = self.home_dir.join("/.config/zlorbrs/configs");
-        std::fs::create_dir_all(&p).map_err(|e| ZlorbError::Io(e))?;
-        std::fs::read_dir(p).map_err(|e| ZlorbError::Io(e))
+        let p = self.home_dir.join(".config/zlorbrs/configs");
+        fs::create_dir_all(&p).map_err(|e| ZlorbError::Io(e))?;
+        fs::read_dir(p).map_err(|e| ZlorbError::Io(e))
     }
 
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
         let config_file_path = self.home_dir.join(".config/zlorbrs/service-config.json");
-        let config_file = read_file_from_filesystem(config_file_path.clone());
-        let opened: String;
-        if config_file.is_none() {
-            opened = self.initialize_default_config()?;
-        } else {
-            opened = config_file.unwrap();
-        }
-        serde_json::from_str::<ServiceConfig>(&opened).map_err(|_| {
-            ZlorbError::ConfigParseError("Failed to convert config file to json string".to_string())
-        })
+
+        let opened = read_file_from_filesystem(config_file_path.clone())
+            .ok_or_else(|| self.initialize_default_config().map_err(|e| e).unwrap())
+            .map_err(|e| ZlorbError::Other(e))?;
+
+        serde_json::from_str::<ServiceConfig>(&opened)
+            .map_err(|e| ZlorbError::ConfigParseError(format!("Parsing failed: {}", e)))
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
         let configs_dir_path = get_home_dir().join(".config/zlorbrs/configs");
-        let config_dir_exists =
-            std::fs::exists(&configs_dir_path).map_err(|e| ZlorbError::Io(e))?;
-        if !config_dir_exists {
+
+        // metadata checks for file/folder metadata and essentially can be used
+        // to determine if something exists on the filesystem
+        if !fs::metadata(&configs_dir_path).is_ok() {
             self.initialize_repo_configs()?;
         }
-        let configs_dir = std::fs::read_dir(&configs_dir_path)
-            .map_err(|_| ZlorbError::ConfigNotFound(configs_dir_path))?;
-        Logger::info(format!("Loaded configs: {:?}", configs_dir));
+
+        let configs_dir = fs::read_dir(&configs_dir_path)
+            .map_err(|e| ZlorbError::Io(e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| ZlorbError::Io(e))?;
+
         let configs = configs_dir
-            .map(|d| {
-                Logger::info(format!("Loading config: {:?}", d));
-                let dir = d.unwrap();
+            .into_iter()
+            .map(|dir| {
                 let p = dir.path().join("config.json");
                 let file_contents = read_file_from_filesystem(p).unwrap();
-                let repo = serde_json::from_str::<RepoConfig>(&file_contents).unwrap();
-                let repo_processor = RepoProcessor::new(repo);
-                return repo_processor;
+                let repo: RepoConfig = serde_json::from_str(&file_contents).map_err(|e| {
+                    ZlorbError::ConfigParseError(format!(
+                        "Parsing failed for {:?}: {}",
+                        dir.path(),
+                        e
+                    ))
+                })?;
+                Ok(RepoProcessor::new(repo))
             })
-            .collect();
-
-        Ok(configs)
+            .collect::<Result<Vec<RepoProcessor>, ZlorbError>>();
+        configs
     }
 
-    pub fn load_repo_config(&self, name: String) -> String {
+    pub fn _load_repo_config(&self, name: String) -> Result<String, ZlorbError> {
         let path = self
             .home_dir
-            .join(format!(".config/zlorbrs/configs/{}/config.json", name));
-        read_file_from_filesystem(path).unwrap()
+            .join(".config/zlorbrs/configs")
+            .join(name)
+            .join("config.json");
+        Ok(read_file_from_filesystem(path).unwrap())
     }
 }

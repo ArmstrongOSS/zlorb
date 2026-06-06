@@ -10,3 +10,4 @@ zlorbrs-lib = { path = "../zlorbrs-lib"}
 log = "0.4.28"
 git2 = "0.20.2"
 colog = "1.4.0"
+tempfile = "3.27.0"
