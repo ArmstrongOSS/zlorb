@@ -11,7 +11,8 @@ pub enum ZlorbError {
     InvalidConfig(String),
     FileNotFOund(PathBuf),
     PermissionDenied(String),
-    SerializationError(String),
+    SerializationErrorGeneric(String),
+    SerializationError(serde_json::Error),
     Git(git2::Error),
     Other(String),
 }
@@ -53,8 +54,8 @@ impl fmt::Display for ZlorbError {
                 Logger::error(format!("Permission denied: {path:?}"));
                 Ok(())
             }
-            ZlorbError::SerializationError(msg) => {
-                Logger::error(format!("Serialization error: {msg}"));
+            ZlorbError::SerializationErrorGeneric(msg) => {
+                Logger::error(format!("Generic Serialization error: {msg}"));
                 Ok(())
             }
             ZlorbError::Other(msg) => {
@@ -63,6 +64,10 @@ impl fmt::Display for ZlorbError {
             }
             ZlorbError::Git(git) => {
                 Logger::error(format!("Recieved git error: {git}"));
+                Ok(())
+            }
+            ZlorbError::SerializationError(error) => {
+                Logger::error(format!("Serialization error: {error}"));
                 Ok(())
             }
         }

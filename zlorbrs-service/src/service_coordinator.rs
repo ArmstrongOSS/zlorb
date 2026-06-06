@@ -1,3 +1,5 @@
+use std::fmt::format;
+
 use crate::config_manager::ConfigManager;
 use crate::repo_processor::RepoProcessor;
 use crate::service_config::ServiceConfig;
@@ -27,11 +29,8 @@ impl ServiceCoordinator {
         // reducing the need to hit the file system every iteration
         // if a repo is added, this service should just be restarted
         Logger::info("---- Setting up repo and service configs".into());
-        let rc = self.config_manager.load_all_repo_configs()?;
-        let sc = self.config_manager.load_service_config()?;
-        println!("rc: {:?}", rc);
-        println!("sc: {:?}", sc);
-
+        self.repo_configs = Some(self.config_manager.load_all_repo_configs()?);
+        self.service_config = Some(self.config_manager.load_service_config()?);
         Logger::info("---- Starting service".into());
         loop {
             // we're throttling the loop so as to not peg the cpu at max usage
@@ -51,11 +50,17 @@ impl ServiceCoordinator {
     }
 
     fn run_cycle(&self) -> Result<(), ZlorbError> {
-        let repos = self.repo_configs.as_ref().unwrap();
-        repos.iter().for_each(|repo| {
-            Logger::info(format!("Updating repo: {}", repo.config.name));
-            let _r = repo.update_from_remote();
-        });
-        Ok(())
+        let repo_configs = self.repo_configs.as_ref();
+        if let Some(repos) = repo_configs {
+            repos.iter().for_each(|repo| {
+                Logger::info(format!("Updating repo: {}", repo.config.name));
+                let _r = repo.update_from_remote();
+            });
+            return Ok(());
+        };
+        Err(ZlorbError::Other(format!(
+            "Repo configs MUST be set on initialization: {:?}",
+            repo_configs
+        )))
     }
 }

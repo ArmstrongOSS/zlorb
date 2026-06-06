@@ -21,8 +21,8 @@ impl ConfigManager {
     pub fn initialize_default_config(&self) -> Result<String, ZlorbError> {
         let config_path = self.home_dir.join(".config/zlorbrs/service-config.json");
         let c = ServiceConfig::default();
-        let f =
-            serde_json::to_string(&c).map_err(|e| ZlorbError::SerializationError(e.to_string()))?;
+        let f = serde_json::to_string(&c)
+            .map_err(|e| ZlorbError::SerializationErrorGeneric(e.to_string()))?;
         create_file_with_content(config_path, &f)?;
         Ok(f)
     }
@@ -36,12 +36,20 @@ impl ConfigManager {
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
         let config_file_path = self.home_dir.join(".config/zlorbrs/service-config.json");
 
-        let opened = read_file_from_filesystem(config_file_path.clone())
-            .ok_or_else(|| self.initialize_default_config().map_err(|e| e).unwrap())
-            .map_err(|e| ZlorbError::Other(e))?;
+        let opened: Result<String, ZlorbError> =
+            match read_file_from_filesystem(config_file_path.clone()) {
+                Some(conf) => Ok(conf),
+                None => match self.initialize_default_config() {
+                    Ok(new_conf) => Ok(new_conf),
+                    Err(e) => Err(e),
+                },
+            };
 
-        serde_json::from_str::<ServiceConfig>(&opened)
-            .map_err(|e| ZlorbError::ConfigParseError(format!("Parsing failed: {}", e)))
+        if let Err(opened_err) = opened {
+            return Err(opened_err);
+        }
+        serde_json::from_str::<ServiceConfig>(&opened.unwrap())
+            .map_err(|e| ZlorbError::SerializationError(e))
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
@@ -58,7 +66,7 @@ impl ConfigManager {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| ZlorbError::Io(e))?;
 
-        let configs = configs_dir
+        configs_dir
             .into_iter()
             .map(|dir| {
                 let p = dir.path().join("config.json");
@@ -72,8 +80,7 @@ impl ConfigManager {
                 })?;
                 Ok(RepoProcessor::new(repo))
             })
-            .collect::<Result<Vec<RepoProcessor>, ZlorbError>>();
-        configs
+            .collect::<Result<Vec<RepoProcessor>, ZlorbError>>()
     }
 
     pub fn _load_repo_config(&self, name: String) -> Result<String, ZlorbError> {
