@@ -1,8 +1,7 @@
 use git2::{
-    AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, IntoCString, MergeAnalysis,
-    MergePreference, Oid, Reference, Remote, RemoteCallbacks,
+    AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
+    Reference, Remote, RemoteCallbacks,
 };
-use log::log;
 use std::{
     fmt::Debug,
     path::PathBuf,
@@ -88,7 +87,7 @@ impl RepoProcessor {
             Ok(package_install_handle)
         });
 
-        let h = handle
+        let _h = handle
             .join()
             .map_err(|_| ZlorbError::Other("Failed to successfully run install command".into()))?;
         Ok(())
@@ -113,14 +112,14 @@ impl RepoProcessor {
             Ok(())
         });
 
-        let h = handle
+        let _h = handle
             .join()
             .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))?;
 
         Ok(())
     }
 
-    fn _setup_fetchoptions_with_creds(&self) -> FetchOptions {
+    fn _setup_fetchoptions_with_creds(&self) -> FetchOptions<'_> {
         let mut callbacks = RemoteCallbacks::new();
         //TODO: Complete the credential stuff
         callbacks.credentials(|_, _, _| Cred::userpass_plaintext("", ""));
@@ -129,7 +128,7 @@ impl RepoProcessor {
         fetch_options
     }
 
-    fn _get_local_branch(&self) -> Result<Branch, ZlorbError> {
+    fn _get_local_branch(&self) -> Result<Branch<'_>, ZlorbError> {
         let branch = self
             .repo
             .find_branch(&self.config.branch, BranchType::Local)
@@ -149,7 +148,7 @@ impl RepoProcessor {
         Ok(id.unwrap())
     }
 
-    fn _get_remote(&self) -> Result<Remote, ZlorbError> {
+    fn _get_remote(&self) -> Result<Remote<'_>, ZlorbError> {
         let remote = self
             .repo
             .find_remote("origin")
@@ -158,7 +157,7 @@ impl RepoProcessor {
     }
 
     fn _download_new_data(&self, remote: &mut Remote) {
-        remote.fetch(
+        let _ = remote.fetch(
             &[self.config.branch.clone()],
             Some(&mut self._setup_fetchoptions_with_creds()),
             None,
@@ -167,7 +166,7 @@ impl RepoProcessor {
 
     fn _get_analysis(
         &self,
-    ) -> Result<(MergeAnalysis, MergePreference, AnnotatedCommit), ZlorbError> {
+    ) -> Result<(MergeAnalysis, MergePreference, AnnotatedCommit<'_>), ZlorbError> {
         let r = &self.repo;
         let fetch_head = r
             .find_reference("FETCH_HEAD")
@@ -195,7 +194,7 @@ impl RepoProcessor {
         Ok(())
     }
 
-    fn _checkout_and_get_ref(&self) -> Result<Reference, ZlorbError> {
+    fn _checkout_and_get_ref(&self) -> Result<Reference<'_>, ZlorbError> {
         let mut checkout = git2::build::CheckoutBuilder::default();
         self.repo
             .checkout_head(Some(&mut checkout))
