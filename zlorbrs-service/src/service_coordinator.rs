@@ -55,6 +55,9 @@ impl ServiceCoordinator {
             repos.iter().for_each(|repo| {
                 Logger::info(format!("Updating repo: {}", repo.config.name));
                 let _r = repo.update_from_remote();
+                if let Err(e) = _r {
+                    e.print();
+                }
             });
             return Ok(());
         };
