@@ -1,0 +1,9 @@
+[zlorb]
+refresh_interval = 30
+
+[[repository]]
+name = "Zlorb",
+path = "/home/triston/zlorb",
+remote = "origin",
+branch = "master"
+build_command = "bun run dev"
