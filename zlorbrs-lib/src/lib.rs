@@ -7,18 +7,17 @@ use std::path::PathBuf;
 use crate::{error::ZlorbError, log::Logger};
 
 pub fn get_home_dir() -> PathBuf {
-    let home_dir = match std::env::home_dir() {
+    match std::env::home_dir() {
         Some(x) => x,
         None => {
             Logger::error("Failed to get the home directory".into());
             panic!("Program exited due to previous error");
         }
-    };
-    home_dir
+    }
 }
 
 pub fn create_file_with_content(path: PathBuf, content: &String) -> Result<String, ZlorbError> {
-    std::fs::write(path, content).map_err(|e| ZlorbError::Io(e))?;
+    std::fs::write(path, content).map_err(ZlorbError::Io)?;
     Ok(content.clone())
 }
 
@@ -31,10 +30,7 @@ pub fn read_file_from_filesystem(path: PathBuf) -> Option<String> {
 }
 
 pub fn check_file_exist(path: PathBuf) -> bool {
-    match std::fs::exists(path) {
-        Ok(val) => val,
-        Err(_) => false,
-    }
+    std::fs::exists(path).unwrap_or_default()
 }
 
 pub mod shared_test_utils {

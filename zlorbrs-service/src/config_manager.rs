@@ -1,7 +1,6 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 use std::fs;
 use std::{fs::ReadDir, path::PathBuf};
-use zlorbrs_lib::log::Logger;
 use zlorbrs_lib::{
     config::RepoConfig, create_file_with_content, error::ZlorbError, get_home_dir,
     read_file_from_filesystem,
@@ -29,8 +28,8 @@ impl ConfigManager {
 
     pub fn initialize_repo_configs(&self) -> Result<ReadDir, ZlorbError> {
         let p = self.home_dir.join(".config/zlorbrs/configs");
-        fs::create_dir_all(&p).map_err(|e| ZlorbError::Io(e))?;
-        fs::read_dir(p).map_err(|e| ZlorbError::Io(e))
+        fs::create_dir_all(&p).map_err(ZlorbError::Io)?;
+        fs::read_dir(p).map_err(ZlorbError::Io)
     }
 
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
@@ -49,7 +48,7 @@ impl ConfigManager {
             return Err(opened_err);
         }
         serde_json::from_str::<ServiceConfig>(&opened.unwrap())
-            .map_err(|e| ZlorbError::SerializationError(e))
+            .map_err(ZlorbError::SerializationError)
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
@@ -57,14 +56,14 @@ impl ConfigManager {
 
         // metadata checks for file/folder metadata and essentially can be used
         // to determine if something exists on the filesystem
-        if !fs::metadata(&configs_dir_path).is_ok() {
+        if fs::metadata(&configs_dir_path).is_err() {
             self.initialize_repo_configs()?;
         }
 
         let configs_dir = fs::read_dir(&configs_dir_path)
-            .map_err(|e| ZlorbError::Io(e))?
+            .map_err(ZlorbError::Io)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| ZlorbError::Io(e))?;
+            .map_err(ZlorbError::Io)?;
 
         configs_dir
             .into_iter()
