@@ -17,17 +17,17 @@ impl DaemonManager {
 
     fn run_process_check() -> Result<ExitStatus, ZlorbError> {
         Command::new("systemctl")
-            .args(&["is-active", "--quiet", "zlorbrs"])
+            .args(["is-active", "--quiet", "zlorbrs"])
             .status()
-            .map_err(|e| ZlorbError::Io(e))
+            .map_err(ZlorbError::Io)
     }
 
     fn run_service_start_cmd() -> Result<ExitStatus, ZlorbError> {
         info!("Starting the daemon");
         let out = Command::new("systemctl")
-            .args(&["start", "zlorbrs"])
+            .args(["start", "zlorbrs"])
             .status()
-            .map_err(|e| ZlorbError::Io(e));
+            .map_err(ZlorbError::Io);
         info!("...Started");
         out
     }
@@ -35,9 +35,9 @@ impl DaemonManager {
     fn run_service_restart_cmd() -> Result<ExitStatus, ZlorbError> {
         info!("Daemon already running, restarting it");
         let out = Command::new("systemctl")
-            .args(&["restart", "zlorbrs"])
+            .args(["restart", "zlorbrs"])
             .status()
-            .map_err(|e| ZlorbError::Io(e));
+            .map_err(ZlorbError::Io);
         info!("...Restarted");
         out
     }

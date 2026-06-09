@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use crate::config_manager::ConfigManager;
 use crate::repo_processor::RepoProcessor;
 use crate::service_config::ServiceConfig;
@@ -16,12 +14,12 @@ pub struct ServiceCoordinator {
 
 impl ServiceCoordinator {
     pub fn new() -> Self {
-        return ServiceCoordinator {
+        ServiceCoordinator {
             service_config: None,
             repo_configs: None,
             first_run_flag: true,
             config_manager: ConfigManager::new(),
-        };
+        }
     }
 
     pub fn run_loop(&mut self) -> Result<(), ZlorbError> {

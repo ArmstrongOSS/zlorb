@@ -30,11 +30,11 @@ impl RepoProcessor {
         let err = format!("Failed to acquire repo: {}", config.path);
         let repo = git2::Repository::open(&config.path).expect(err.as_str());
 
-        return Self {
+        Self {
             repo_path: PathBuf::from(&config.path),
             repo,
             config,
-        };
+        }
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
@@ -65,7 +65,7 @@ impl RepoProcessor {
         self._setup_repo_for_checkout(fetch_commit)?;
         let remote_ref = self._checkout_and_get_ref()?;
 
-        Ok(self._should_trigger_update(remote_ref, local_oid)?)
+        self._should_trigger_update(remote_ref, local_oid)
     }
 
     fn pull_node_modules(&self) -> Result<(), ZlorbError> {
@@ -76,7 +76,7 @@ impl RepoProcessor {
                 .current_dir(p)
                 .stdout(Stdio::piped())
                 .output()
-                .map_err(|e| ZlorbError::Io(e))?;
+                .map_err(ZlorbError::Io)?;
             if !(package_install_handle.stderr.is_empty()) {
                 let err = format!(
                     "Npm install failed: {}",
@@ -94,16 +94,16 @@ impl RepoProcessor {
     }
 
     fn run_build(&self) -> Result<(), ZlorbError> {
-        let _ = self.pull_node_modules()?;
+        self.pull_node_modules()?;
         let path = self.config.path.clone();
         let build_command = self.config.build_command.clone();
 
         let handle = std::thread::spawn(move || -> Result<(), ZlorbError> {
-            std::env::set_current_dir(path).map_err(|e| ZlorbError::Io(e))?;
+            std::env::set_current_dir(path).map_err(ZlorbError::Io)?;
             let build_handle = std::process::Command::new(build_command)
                 .stdout(Stdio::piped())
                 .output()
-                .map_err(|e| ZlorbError::Io(e))?;
+                .map_err(ZlorbError::Io)?;
             if build_handle.status.code() == Some(1) {
                 return Err(ZlorbError::Other(
                     "build returned status code 1 resulting in failure".to_string(),
@@ -152,13 +152,13 @@ impl RepoProcessor {
         let remote = self
             .repo
             .find_remote("origin")
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         Ok(remote)
     }
 
     fn _download_new_data(&self, remote: &mut Remote) {
         let _ = remote.fetch(
-            &[self.config.branch.clone()],
+            std::slice::from_ref(&self.config.branch),
             Some(&mut self._setup_fetchoptions_with_creds()),
             None,
         );
@@ -170,13 +170,13 @@ impl RepoProcessor {
         let r = &self.repo;
         let fetch_head = r
             .find_reference("FETCH_HEAD")
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         let fetch_commit = r
             .reference_to_annotated_commit(&fetch_head)
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         let analysis = r
             .merge_analysis(&[&fetch_commit])
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         let (m, n) = analysis;
         Ok((m, n, fetch_commit))
     }
@@ -185,12 +185,12 @@ impl RepoProcessor {
         let refname = format!("refs/heads/{}", self.config.branch);
         self.repo
             .find_reference(&refname)
-            .map_err(|e| ZlorbError::Git(e))?
+            .map_err(ZlorbError::Git)?
             .set_target(fetch_commit.id(), "Fast-Forward")
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         self.repo
             .set_head(&refname)
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
         Ok(())
     }
 
@@ -198,12 +198,12 @@ impl RepoProcessor {
         let mut checkout = git2::build::CheckoutBuilder::default();
         self.repo
             .checkout_head(Some(&mut checkout))
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
 
         let remote_ref = self
             .repo
             .resolve_reference_from_short_name(&format!("origin/{}", self.config.branch))
-            .map_err(|e| ZlorbError::Git(e))?;
+            .map_err(ZlorbError::Git)?;
 
         Ok(remote_ref)
     }
@@ -214,12 +214,12 @@ impl RepoProcessor {
         local_oid: Oid,
     ) -> Result<bool, ZlorbError> {
         let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
-        let dist_dir_path = PathBuf::from(&self.config.path).join("/dist");
-        let dist_dir_exists = std::fs::exists(dist_dir_path).map_err(|e| ZlorbError::Io(e))?;
+        let dist_dir_path = PathBuf::from(&self.config.path).join("dist");
+        let dist_dir_exists = std::fs::exists(dist_dir_path).map_err(ZlorbError::Io)?;
         let local_iod_matches_remote = local_oid == remote_iod;
         if !dist_dir_exists || !local_iod_matches_remote {
             return Ok(true);
         }
-        return Ok(false);
+        Ok(false)
     }
 }

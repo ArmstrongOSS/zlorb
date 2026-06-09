@@ -13,7 +13,7 @@ pub(crate) fn watch() {
         .arg("-u")
         .arg("zlorbrs")
         .status()
-        .map_err(|e| ZlorbError::Io(e));
+        .map_err(ZlorbError::Io);
     match out {
         Ok(status) => {
             if status.success() {
@@ -56,7 +56,7 @@ pub(crate) fn remove(repo_name: String) {
             return false;
         }
         let file_name = file_name.unwrap();
-        return file_name == &repo_name;
+        file_name == repo_name
     });
 
     if found.is_none() {
@@ -84,7 +84,7 @@ pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
 
     error!("Config directory doesnt exist. Creating it now...");
     let create_dir_results = fs::create_dir_all(home_dir.clone());
-    if let Ok(_) = create_dir_results {
+    if create_dir_results.is_ok() {
         let files = fs::read_dir(home_dir);
         if files.is_err() {
             error!(
