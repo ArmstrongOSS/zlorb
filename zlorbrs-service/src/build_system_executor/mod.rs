@@ -1,11 +1,14 @@
-use std::{
-    path::Path,
-    process::{Output, Stdio},
+mod managers;
+
+use crate::{
+    build_system_executor::managers::{
+        bun::BunManager,
+        manager::{BuildStrategy, Manager},
+        rust::RustManager,
+    },
+    repo_processor::RepoProcessor,
 };
-
 use zlorbrs_lib::error::ZlorbError;
-
-use crate::repo_processor::RepoProcessor;
 
 ///  An isolated utility service responsible for running external shell commands (the build step).
 pub struct BuildSystemExecutor<'a> {
@@ -13,88 +16,25 @@ pub struct BuildSystemExecutor<'a> {
 }
 
 impl<'a> BuildSystemExecutor<'a> {
-    fn _execute(_target_path: &Path, _command: &str) {}
-
-    fn run_build(&self) -> Result<(), ZlorbError> {
-        let strat = self.determine_strategy();
-
-        match strat {
-            BuildStrategy::Bun(bun_manager) => todo!(),
-            BuildStrategy::Rust(rust_manager) => todo!(),
-        };
+    pub fn run_build(&self) -> Result<(), ZlorbError> {
+        let config = self.processor.config.clone();
+        match self.determine_strategy() {
+            BuildStrategy::Bun(bun_manager) => bun_manager.exec(&config),
+            BuildStrategy::Rust(rust_manager) => rust_manager.exec(&config),
+            BuildStrategy::None => Err(ZlorbError::InvalidConfig(format!(
+                "The build command '{}' provided to repo: {} was invalid",
+                config.build_command, config.name
+            ))),
+        }
     }
 
     fn determine_strategy(&self) -> BuildStrategy {
-        BuildStrategy::Bun(BunManager {})
+        // this is fragile and prone to error so TODO fix this shit
+        let build_command = Some(self.processor.config.build_command.clone());
+        match build_command {
+            Some(x) if x.contains("bun") => BuildStrategy::Bun(BunManager {}),
+            Some(x) if x.contains("cargo") => BuildStrategy::Rust(RustManager {}),
+            _ => BuildStrategy::None,
+        }
     }
 }
-
-enum BuildStrategy {
-    Bun(BunManager),
-    Rust(RustManager),
-}
-
-trait Manager {
-    fn build(&self) -> Result<(), ZlorbError> {
-        unimplemented!()
-    }
-}
-
-struct BunManager {}
-impl Manager for BunManager {
-    fn build(&self) -> Result<(), ZlorbError> {
-        let path = self.processor.config.path.clone();
-        let build_command = self.processor.config.build_command.clone();
-
-        let handle = std::thread::spawn(move || -> Result<(), ZlorbError> {
-            std::env::set_current_dir(path).map_err(ZlorbError::Io)?;
-            let build_handle = std::process::Command::new(build_command)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(ZlorbError::Io)?;
-            if build_handle.status.code() == Some(1) {
-                return Err(ZlorbError::Other(
-                    "build returned status code 1 resulting in failure".to_string(),
-                ));
-            }
-            Ok(())
-        });
-
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))?;
-
-        Ok(())
-    }
-}
-
-impl BunManager {
-    fn pull_node_modules(&self) -> Result<(), ZlorbError> {
-        let p = self.processor.repo_path.to_string_lossy().into_owned();
-        let handle = std::thread::spawn(move || -> Result<Output, ZlorbError> {
-            let package_install_handle = std::process::Command::new("bun")
-                .arg("install")
-                .current_dir(p)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(ZlorbError::Io)?;
-            if !(package_install_handle.stderr.is_empty()) {
-                let err = format!(
-                    "Npm install failed: {}",
-                    String::from_utf8_lossy(&package_install_handle.stderr)
-                );
-                return Err(ZlorbError::Other(err));
-            }
-            Ok(package_install_handle)
-        });
-
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Failed to successfully run install command".into()))?;
-        Ok(())
-    }
-
-    fn build() {}
-}
-
-struct RustManager {}
