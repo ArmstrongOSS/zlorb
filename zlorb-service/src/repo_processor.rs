@@ -46,19 +46,24 @@ impl RepoProcessor {
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
-        match self.fetch_remote_updates()? {
+        // TODO this should also check if a 'out' folder is expected
+        // and if it is, but ist present, then it should run a build
+        let should_run_build = self.fetch_remote_updates()?;
+        match should_run_build {
             true => {
                 Logger::info(format!("Found remote updates for {}", self.config.name));
                 let exec = BuildSystemExecutor { processor: self };
                 exec.run_build()
             }
-            false => Ok(()),
+            false => {
+                Logger::info(format!("No build needed for {}", self.config.name));
+                Ok(())
+            }
         }
     }
 
     fn fetch_remote_updates(&self) -> Result<bool, ZlorbError> {
         let local_branch = self._get_local_branch()?;
-        println!("{:?}", local_branch.name());
         let local_oid = self._get_local_oid_from_branch(local_branch)?;
         let mut remote = self._get_remote()?;
         self._download_new_data(&mut remote);
