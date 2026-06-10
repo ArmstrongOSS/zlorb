@@ -1,39 +1,21 @@
-pub struct BunManager {}
-impl Manager for BunManager {
-    pub fn build(&self) -> Result<(), ZlorbError> {
-        let path = self.processor.config.path.clone();
-        let build_command = self.processor.config.build_command.clone();
+use crate::build_system_executor::managers::manager::Manager;
+use std::{
+    path::PathBuf,
+    process::{Output, Stdio},
+};
+use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
 
-        let handle = std::thread::spawn(move || -> Result<(), ZlorbError> {
-            std::env::set_current_dir(path).map_err(ZlorbError::Io)?;
-            let build_handle = std::process::Command::new(build_command)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(ZlorbError::Io)?;
-            if build_handle.status.code() == Some(1) {
-                return Err(ZlorbError::Other(
-                    "build returned status code 1 resulting in failure".to_string(),
-                ));
-            }
-            Ok(())
-        });
-
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))?;
-
-        Ok(())
-    }
-}
-
+pub struct BunManager;
 impl BunManager {
-    fn pull_node_modules(&self) -> Result<(), ZlorbError> {
-        let p = self.processor.repo_path.to_string_lossy().into_owned();
+    fn pull_node_modules(&self, repo_path: PathBuf) -> Result<(), ZlorbError> {
+        Logger::info("Bun build: Pullig Node Modules".into());
+        let p = repo_path.to_string_lossy().into_owned();
         let handle = std::thread::spawn(move || -> Result<Output, ZlorbError> {
             let package_install_handle = std::process::Command::new("bun")
                 .arg("install")
                 .current_dir(p)
                 .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .output()
                 .map_err(ZlorbError::Io)?;
             if !(package_install_handle.stderr.is_empty()) {
@@ -46,11 +28,45 @@ impl BunManager {
             Ok(package_install_handle)
         });
 
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Failed to successfully run install command".into()))?;
+        let _h = handle.join().map_err(|_| {
+            ZlorbError::Other("Failed to successfully run install command".into())
+        })??;
+        Logger::info(format!("{}", String::from_utf8_lossy(&_h.stdout)));
         Ok(())
     }
 
-    fn build() {}
+    fn build(&self, config: &RepoConfig) -> Result<(), ZlorbError> {
+        Logger::info("Bun build: running build".into());
+        let path = config.path.clone();
+
+        let handle = std::thread::spawn(move || -> Result<Output, ZlorbError> {
+            let build_handle = std::process::Command::new("bun")
+                .args(["run", "build"])
+                .current_dir(path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(ZlorbError::Io)?;
+            if build_handle.status.code() == Some(1) {
+                return Err(ZlorbError::Other(
+                    "Bun build returned status code 1 resulting in failure".to_string(),
+                ));
+            }
+            Ok(build_handle)
+        });
+
+        let _h = handle
+            .join()
+            .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))??;
+
+        Logger::info(format!("{}", String::from_utf8_lossy(&_h.stdout)));
+        Ok(())
+    }
+}
+
+impl Manager for BunManager {
+    fn exec(&self, config: &RepoConfig) -> Result<(), ZlorbError> {
+        self.pull_node_modules(PathBuf::from(&config.path))?;
+        self.build(config)
+    }
 }
