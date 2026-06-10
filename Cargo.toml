@@ -1,3 +1,3 @@
 [workspace]
-members = ["zlorb-ctl", "zlorb-lib", "zlorb-service"]
+members = ["zlorb-ctl", "zlorb-lib", "zlorb-service", "zlorb-web"]
 resolver = "3"
