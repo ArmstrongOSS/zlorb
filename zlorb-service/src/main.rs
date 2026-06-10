@@ -1,5 +1,5 @@
 use crate::service_coordinator::ServiceCoordinator;
-use zlorbrs_lib::error::ZlorbError;
+use zlorb_lib::error::ZlorbError;
 
 mod build_system_executor;
 mod config_manager;

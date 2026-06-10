@@ -1,12 +1,12 @@
-# zlorbrs 🛠️
+# zlorb 🛠️
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tristonarmstrong/zlorb/1-overview)
 
-A lightweight, systemd-managed continuous integration tool for Git-based projects. zlorbrs monitors repositories, detects changes, and triggers builds using Bun, 
+A lightweight, systemd-managed continuous integration tool for Git-based projects. zlorb monitors repositories, detects changes, and triggers builds using Bun, 
 keeping your projects up-to-date effortlessly.
 
 ## 📖 Overview
-zlorbrs is a Rust-based system with three components: `zlorbrs-service` (the monitoring daemon), `zlorbrs-ctl` (a CLI for easy management), and `zlorbrs-lib` (shared functionality). 
+zlorb is a Rust-based system with three components: `zlorb-service` (the monitoring daemon), `zlorb-ctl` (a CLI for easy management), and `zlorb-lib` (shared functionality). 
 It watches Git repositories for updates, performs safe fast-forward merges, and runs build commands when changes are detected or build artifacts are missing.
 
 ## 🔑 Key Features
@@ -25,12 +25,12 @@ git clone <repository-url>
 Build and install:
 ```bash
 just build
-sudo systemctl enable zlorbrs
-sudo systemctl start zlorbrs
+sudo systemctl enable zlorb
+sudo systemctl start zlorb
 ```
 
 ## ⚙️ Configuration
-zlorbrs uses JSON configuration files stored in `~/.config/zlorbrs/`. The global `service-config.json` sets the monitoring interval, while per-repository `config.json` 
+zlorb uses JSON configuration files stored in `~/.config/zlorb/`. The global `service-config.json` sets the monitoring interval, while per-repository `config.json` 
 files define repository-specific settings.
 
 Example `service-config.json`:
@@ -52,16 +52,16 @@ Example repository `config.json`:
 ```
 
 ## 🖱️ Usage
-Manage repositories with `zlorbrs-ctl` commands:
+Manage repositories with `zlorb-ctl` commands:
 ```bash
 # Add a repository
-zlorbrs-ctl add --name my-repo --path /path/to/repo --branch main --remote origin --build-command "bun build"
+zlorb-ctl add --name my-repo --path /path/to/repo --branch main --remote origin --build-command "bun build"
 
 # List all configured repositories
-zlorbrs-ctl list
+zlorb-ctl list
 
 # Remove a repository
-zlorbrs-ctl remove my-repo
+zlorb-ctl remove my-repo
 ```
 
 ## 🚀 Deployment
@@ -70,12 +70,12 @@ The service runs in the foreground with automatic recovery on failure, ensuring 
 
 ## 🌟 Getting Started
 
-1. Install zlorbrs as described above.
-1. Configure your repositories using `zlorbrs-ctl add`.
-1. Start the service with `sudo systemctl start zlorbrs`.
-1. Monitor build logs via `journalctl -u zlorbrs`.
+1. Install zlorb as described above.
+1. Configure your repositories using `zlorb-ctl add`.
+1. Start the service with `sudo systemctl start zlorb`.
+1. Monitor build logs via `journalctl -u zlorb`.
 
-zlorbrs will automatically keep your repositories updated and built, saving you time and effort.
+zlorb will automatically keep your repositories updated and built, saving you time and effort.
 
 ## 🤝 Contributing
 Want to contribute? Check the System Architecture and Workspace Structure for details. Pull requests and feedback are welcome!

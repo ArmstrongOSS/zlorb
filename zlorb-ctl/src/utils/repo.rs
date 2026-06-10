@@ -5,13 +5,13 @@ use std::{
     iter::Enumerate,
     process,
 };
-use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, get_home_dir};
+use zlorb_lib::{config::RepoConfig, error::ZlorbError, get_home_dir};
 
 pub(crate) fn watch() {
     let out = process::Command::new("journalctl")
         .arg("-f")
         .arg("-u")
-        .arg("zlorbrs")
+        .arg("zlorb")
         .status()
         .map_err(ZlorbError::Io);
     match out {
@@ -76,7 +76,7 @@ pub(crate) fn remove(repo_name: String) {
 
 pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
     let mut home_dir = get_home_dir();
-    home_dir.push("/.config/zlorbrs/configs");
+    home_dir.push("/.config/zlorb/configs");
 
     if let Ok(dir) = fs::read_dir(home_dir.clone()) {
         return Some(dir.enumerate());
@@ -125,7 +125,7 @@ pub(crate) fn add() {
 
     if found_config.is_some() {
         error!(
-            "{:?} is already configured. If you want to edit the configuration file, you can find it at HOME/zlorbrs/configs/{:?}",
+            "{:?} is already configured. If you want to edit the configuration file, you can find it at HOME/zlorb/configs/{:?}",
             dir_name, dir_name
         );
         return;

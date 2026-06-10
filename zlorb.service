@@ -1,12 +1,12 @@
 [Unit]
-Description=Zlorbrs Daemon
+Description=Zlorb Daemon
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/zlorbrs-service
+ExecStart=/usr/bin/zlorb-service
 Type=simple
 Restart=always
-Environment="RUST_LOG=zlorbrs_service"
+Environment="RUST_LOG=zlorb_service"
 
 
 [Install]

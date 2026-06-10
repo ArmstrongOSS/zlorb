@@ -39,7 +39,7 @@ impl RepoConfig {
     pub fn load(&self, repo_name: String) -> Result<String, io::Error> {
         Logger::info(format!("Loading config for {}", repo_name));
         let mut contents = fs::read_to_string(format!(
-            "{}/.config/zlorbrs/configs/{}",
+            "{}/.config/zlorb/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),
             repo_name
         ));
@@ -54,7 +54,7 @@ impl RepoConfig {
     pub fn save(&self) -> String {
         Logger::info("Generating configuration file. System assumes Bun build script".into());
         let directory_path = format!(
-            "{}/.config/zlorbrs/configs/{}",
+            "{}/.config/zlorb/configs/{}",
             std::env::home_dir().unwrap().to_str().unwrap(),
             self.name
         );

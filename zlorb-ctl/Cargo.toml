@@ -1,0 +1,10 @@
+[package]
+name = "zlorb-ctl"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = {version="4.5.48", features=["derive"] }
+colog = "1.4.0"
+log = "0.4.28"
+zlorb-lib = { path = "../zlorb-lib"}
