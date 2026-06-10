@@ -76,7 +76,7 @@ pub(crate) fn remove(repo_name: String) {
 
 pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
     let mut home_dir = get_home_dir();
-    home_dir.push("/.config/zlorb/configs");
+    home_dir.push(".config/zlorb/configs");
 
     if let Ok(dir) = fs::read_dir(home_dir.clone()) {
         return Some(dir.enumerate());
