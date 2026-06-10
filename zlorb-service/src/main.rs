@@ -9,6 +9,5 @@ mod service_coordinator;
 
 fn main() -> Result<(), ZlorbError> {
     colog::init();
-    println!("Testing webhook");
     ServiceCoordinator::new().run_loop()
 }
