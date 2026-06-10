@@ -2,12 +2,17 @@ use git2::{
     AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
     Reference, Remote, RemoteCallbacks,
 };
+<<<<<<< HEAD:zlorb-service/src/repo_processor.rs
 use std::{
     fmt::Debug,
     path::PathBuf,
     process::{Output, Stdio},
 };
 use zlorb_lib::{config::RepoConfig, error::ZlorbError};
+=======
+use std::{fmt::Debug, path::PathBuf};
+use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
+>>>>>>> 0cc49b0 (pushing latest):zlorbrs-service/src/repo_processor.rs
 
 use crate::build_system_executor::BuildSystemExecutor;
 
@@ -41,23 +46,26 @@ impl RepoProcessor {
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
-        let has_updates = self.fetch_remote_updates()?;
-        if has_updates {
-            let executor = BuildSystemExecutor { processor: self };
-            executor.
+        match self.fetch_remote_updates()? {
+            true => {
+                Logger::info(format!("Found remote updates for {}", self.config.name));
+                let exec = BuildSystemExecutor { processor: self };
+                exec.run_build()
+            }
+            false => Ok(()),
         }
-        Ok(())
     }
 
     fn fetch_remote_updates(&self) -> Result<bool, ZlorbError> {
         let local_branch = self._get_local_branch()?;
+        println!("{:?}", local_branch.name());
         let local_oid = self._get_local_oid_from_branch(local_branch)?;
         let mut remote = self._get_remote()?;
         self._download_new_data(&mut remote);
         let analysis = self._get_analysis()?;
         let (merge_analysis, _, fetch_commit) = analysis;
         if merge_analysis.is_up_to_date() {
-            return Ok(true);
+            return Ok(false);
         }
         if !merge_analysis.is_fast_forward() {
             return Err(ZlorbError::Git(git2::Error::new(
