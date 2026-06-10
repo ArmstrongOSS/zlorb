@@ -55,7 +55,6 @@ impl RepoProcessor {
 
     fn fetch_remote_updates(&self) -> Result<bool, ZlorbError> {
         let local_branch = self._get_local_branch()?;
-        println!("{:?}", local_branch.name());
         let local_oid = self._get_local_oid_from_branch(local_branch)?;
         let mut remote = self._get_remote()?;
         self._download_new_data(&mut remote);
