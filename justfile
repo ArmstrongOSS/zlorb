@@ -15,8 +15,11 @@ install: install-bins install-service
 clean:
   cargo clean
 
+ctl:
+  cargo run -p zlorb-ctl
+
 service:
   cargo run -p zlorb-service
 
-ctl:
-  cargo run -p zlorb-ctl
+web:
+  cargo run -p zlorb-web
