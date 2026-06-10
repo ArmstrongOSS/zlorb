@@ -8,6 +8,5 @@ Type=simple
 Restart=always
 Environment="RUST_LOG=zlorb_service"
 
-
 [Install]
 WantedBy=default.target
