@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="text-scale" content="scale" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles/styles.css" />
+
+    <script type="module">import htmx from '/vendor/htmx@4.0.0-beta4.min.js'</script>
+
+    <title>Zlorb WebUI</title>
+</head>
+
+<body>
+    <main>
+        <h1>Zlorb Web UI</h1>
+        <div>Status: <span hx-get="/health" hx-trigger="load" hx-swap="innerHTML">OFFLINE</span></div>
+        
+        <br />
+        <h2>Tracked Repositories</h2>
+    </main>
+</body>
+
+</html>
