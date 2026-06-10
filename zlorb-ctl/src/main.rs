@@ -11,14 +11,14 @@ struct Args {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
-    /// remove a repo from the configs watched by the daemon @ ~/.config/zlorbrs/configs
+    /// remove a repo from the configs watched by the daemon @ ~/.config/zlorb/configs
     Remove {
         #[arg(short, long)]
         repo_name: String,
     },
-    /// adds a repo to the configs watched by the daemon @ ~/.config/zlorbrs/configs
+    /// adds a repo to the configs watched by the daemon @ ~/.config/zlorb/configs
     Add,
-    /// list repos currently watched by the daemon @ ~/.config/zlorbrs/configs
+    /// list repos currently watched by the daemon @ ~/.config/zlorb/configs
     List,
     /// starts the repo watch daemon
     Start,

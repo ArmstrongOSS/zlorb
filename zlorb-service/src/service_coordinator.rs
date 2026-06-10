@@ -1,8 +1,8 @@
 use crate::config_manager::ConfigManager;
 use crate::repo_processor::RepoProcessor;
 use crate::service_config::ServiceConfig;
-use zlorbrs_lib::error::ZlorbError;
-use zlorbrs_lib::log::Logger;
+use zlorb_lib::error::ZlorbError;
+use zlorb_lib::log::Logger;
 
 /// The primary orchestrator. It manages the system's global state and the continuous operation loop.
 pub struct ServiceCoordinator {

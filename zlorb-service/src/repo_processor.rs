@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     process::{Output, Stdio},
 };
-use zlorbrs_lib::{config::RepoConfig, error::ZlorbError};
+use zlorb_lib::{config::RepoConfig, error::ZlorbError};
 
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,

@@ -1,7 +1,7 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 use std::fs;
 use std::{fs::ReadDir, path::PathBuf};
-use zlorbrs_lib::{
+use zlorb_lib::{
     config::RepoConfig, create_file_with_content, error::ZlorbError, get_home_dir,
     read_file_from_filesystem,
 };
@@ -18,7 +18,7 @@ impl ConfigManager {
         }
     }
     pub fn initialize_default_config(&self) -> Result<String, ZlorbError> {
-        let config_path = self.home_dir.join(".config/zlorbrs/service-config.json");
+        let config_path = self.home_dir.join(".config/zlorb/service-config.json");
         let c = ServiceConfig::default();
         let f = serde_json::to_string(&c)
             .map_err(|e| ZlorbError::SerializationErrorGeneric(e.to_string()))?;
@@ -27,13 +27,13 @@ impl ConfigManager {
     }
 
     pub fn initialize_repo_configs(&self) -> Result<ReadDir, ZlorbError> {
-        let p = self.home_dir.join(".config/zlorbrs/configs");
+        let p = self.home_dir.join(".config/zlorb/configs");
         fs::create_dir_all(&p).map_err(ZlorbError::Io)?;
         fs::read_dir(p).map_err(ZlorbError::Io)
     }
 
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
-        let config_file_path = self.home_dir.join(".config/zlorbrs/service-config.json");
+        let config_file_path = self.home_dir.join(".config/zlorb/service-config.json");
 
         let opened: Result<String, ZlorbError> =
             match read_file_from_filesystem(config_file_path.clone()) {
@@ -52,7 +52,7 @@ impl ConfigManager {
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
-        let configs_dir_path = get_home_dir().join(".config/zlorbrs/configs");
+        let configs_dir_path = get_home_dir().join(".config/zlorb/configs");
 
         // metadata checks for file/folder metadata and essentially can be used
         // to determine if something exists on the filesystem
@@ -85,7 +85,7 @@ impl ConfigManager {
     pub fn _load_repo_config(&self, name: String) -> Result<String, ZlorbError> {
         let path = self
             .home_dir
-            .join(".config/zlorbrs/configs")
+            .join(".config/zlorb/configs")
             .join(name)
             .join("config.json");
         Ok(read_file_from_filesystem(path).unwrap())

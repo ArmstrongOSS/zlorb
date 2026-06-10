@@ -21,7 +21,7 @@ mod tests {
     fn test_fetch_update_valid_repo() {
         // Initialize an empty repository
         let mut tmp_dir = env::temp_dir();
-        tmp_dir.push("zlorbrs_git_test_valid");
+        tmp_dir.push("zlorb_git_test_valid");
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
@@ -37,7 +37,7 @@ mod tests {
     fn test_fetch_update_invalid_repo() {
         // Directory that is not a git repository
         let mut tmp_dir = env::temp_dir();
-        tmp_dir.push("zlorbrs_git_test_invalid");
+        tmp_dir.push("zlorb_git_test_invalid");
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).unwrap();
 
