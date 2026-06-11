@@ -9,7 +9,7 @@ pub enum ZlorbError {
     ConfigNotFound(PathBuf),
     ConfigParseError(String),
     InvalidConfig(String),
-    FileNotFOund(PathBuf),
+    FileNotFound(PathBuf),
     PermissionDenied(String),
     SerializationErrorGeneric(String),
     SerializationError(serde_json::Error),
@@ -46,7 +46,7 @@ impl fmt::Display for ZlorbError {
                 Logger::error(format!("Invalid configuration: {msg}"));
                 Ok(())
             }
-            ZlorbError::FileNotFOund(path) => {
+            ZlorbError::FileNotFound(path) => {
                 Logger::error(format!("File not found: {path:?}"));
                 Ok(())
             }
