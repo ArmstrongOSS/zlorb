@@ -26,7 +26,7 @@ impl RustManager {
 impl Manager for RustManager {
     fn exec(
         &self,
-        config: &zlorb_lib::config::RepoConfig,
+        config: &zlorb_lib::config::RepositoryConfiguration,
     ) -> Result<(), zlorb_lib::error::ZlorbError> {
         self.build(config.path.clone())
     }

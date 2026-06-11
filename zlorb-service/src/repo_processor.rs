@@ -3,14 +3,14 @@ use git2::{
     Reference, Remote, RemoteCallbacks,
 };
 use std::{fmt::Debug, path::PathBuf};
-use zlorb_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
+use zlorb_lib::{config::RepositoryConfiguration, error::ZlorbError, log::Logger};
 
 use crate::build_system_executor::BuildSystemExecutor;
 
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
-    pub config: RepoConfig,
+    pub config: RepositoryConfiguration,
 }
 
 impl Debug for RepoProcessor {
@@ -24,7 +24,7 @@ impl Debug for RepoProcessor {
 }
 
 impl RepoProcessor {
-    pub fn new(config: RepoConfig) -> Self {
+    pub fn new(config: RepositoryConfiguration) -> Self {
         // TODO: this should be a function, not in the constructor
         let err = format!("Failed to acquire repo: {}", config.path);
         let repo = git2::Repository::open(&config.path).expect(err.as_str());

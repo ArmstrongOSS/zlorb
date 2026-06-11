@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     process::{Output, Stdio},
 };
-use zlorb_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
+use zlorb_lib::{config::RepositoryConfiguration, error::ZlorbError, log::Logger};
 
 pub struct BunManager;
 impl BunManager {
@@ -35,7 +35,7 @@ impl BunManager {
         Ok(())
     }
 
-    fn build(&self, config: &RepoConfig) -> Result<(), ZlorbError> {
+    fn build(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
         Logger::info("Bun build: running build".into());
         let path = config.path.clone();
 
@@ -65,7 +65,7 @@ impl BunManager {
 }
 
 impl Manager for BunManager {
-    fn exec(&self, config: &RepoConfig) -> Result<(), ZlorbError> {
+    fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
         self.pull_node_modules(PathBuf::from(&config.path))?;
         self.build(config)
     }
