@@ -1,11 +1,14 @@
 use log::{error, info};
 use std::{
     env,
-    fs::{self, ReadDir},
+    fs::{self, OpenOptions, ReadDir, create_dir_all},
+    io::Write,
     iter::Enumerate,
     process,
 };
 use zlorb_lib::{config::RepoConfig, error::ZlorbError, get_home_dir};
+
+use crate::configuration::RepositoryConfiguration;
 
 pub(crate) fn watch() {
     let out = process::Command::new("journalctl")
@@ -133,6 +136,57 @@ pub(crate) fn add() {
     let repo_name = dir_name.unwrap().to_str().unwrap().to_string();
     let repo = RepoConfig::new(repo_name.clone());
     let _ = repo.load(repo_name);
+}
+
+/// Adds the current working directory as a tracked repository in the global configuration.
+///
+/// ### Errors
+/// This function will return an error if:
+/// * The current working directory cannot be determined.
+/// * The current working directory is not a valid Git repository.
+/// * The system fails to locate or create the `~/.config/zlob/` directory.
+/// * There are file I/O permissions or serialization errors when appending to `repositories.toml`.
+///
+/// TODO: Read the file before writing to prevent duplicates
+/// TODO: Ensure the directory being added is a valid git repository
+pub(crate) fn add_toml() -> Result<(), Box<dyn std::error::Error>> {
+    // get current working directory
+    let cwd = std::env::current_dir()?;
+    let path_str = cwd.to_string_lossy().to_string();
+
+    // use folder name as repository name
+    let repository_name = cwd
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap();
+
+    // TODO: extract actual git remote/branch
+    let current_repository = RepositoryConfiguration {
+        name: repository_name.clone(),
+        path: path_str,
+        remote: "origin".to_string(),
+        branch: "master".to_string(),
+        build_command: String::new(),
+    };
+
+    let mut configuration_path = get_home_dir().join(".config/zlorb");
+    let _ = create_dir_all(&configuration_path); // ensure `~/.config/zlorb/` exists
+    configuration_path.push("repositories.toml");
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&configuration_path)?;
+    let mut toml_string = format!("\n[[repository]]\n");
+    toml_string.push_str(&toml::to_string(&current_repository)?);
+
+    file.write_all(toml_string.as_bytes())?;
+    println!(
+        "Directory '{}' added to tracked repositories",
+        repository_name
+    );
+
+    Ok(())
 }
 
 pub(crate) fn list() {

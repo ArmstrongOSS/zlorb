@@ -1,3 +1,4 @@
+mod configuration;
 mod utils;
 use crate::utils::{daemon::DaemonManager, repo};
 use clap::{Parser, Subcommand};
@@ -33,7 +34,10 @@ fn main() {
     let args = Args::parse();
 
     match args.cmd {
-        Commands::Add => repo::add(),
+        Commands::Add => {
+            // repo::add();
+            repo::add_toml();
+        },
         Commands::List => repo::list(),
         Commands::Start => DaemonManager::start().unwrap(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
