@@ -8,6 +8,5 @@ mod service_config;
 mod service_coordinator;
 
 fn main() -> Result<(), ZlorbError> {
-    colog::init();
     ServiceCoordinator::new().run_loop()
 }

@@ -8,7 +8,7 @@ use crate::{
     },
     repo_processor::RepoProcessor,
 };
-use zlorbrs_lib::error::ZlorbError;
+use zlorb_lib::error::ZlorbError;
 
 ///  An isolated utility service responsible for running external shell commands (the build step).
 pub struct BuildSystemExecutor<'a> {

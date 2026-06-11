@@ -1,6 +1,6 @@
 use std::process::{Output, Stdio};
 
-use zlorbrs_lib::error::ZlorbError;
+use zlorb_lib::error::ZlorbError;
 
 use crate::build_system_executor::managers::manager::Manager;
 
@@ -26,8 +26,8 @@ impl RustManager {
 impl Manager for RustManager {
     fn exec(
         &self,
-        config: &zlorbrs_lib::config::RepoConfig,
-    ) -> Result<(), zlorbrs_lib::error::ZlorbError> {
+        config: &zlorb_lib::config::RepoConfig,
+    ) -> Result<(), zlorb_lib::error::ZlorbError> {
         self.build(config.path.clone())
     }
 }
