@@ -21,15 +21,15 @@ pub(crate) fn watch() -> Result<(), ZlorbError> {
         Ok(status) => {
             if status.success() {
                 println!("End");
-                return Ok(());
+                Ok(())
             } else {
                 println!("End: Fail");
-                return Ok(());
+                Ok(())
             }
         }
         Err(e) => {
             e.print();
-            return Err(e);
+            Err(e)
         }
     }
 }
@@ -40,6 +40,7 @@ pub(crate) fn remove(repo_name: String) -> Result<(), ZlorbError> {
         Logger::info("There are no repos to remove".into());
         return Ok(());
     }
+
     let repos = repos.unwrap();
     let mut mapped_repos = repos.map(|item| {
         let x = item.1;
@@ -69,6 +70,7 @@ pub(crate) fn remove(repo_name: String) -> Result<(), ZlorbError> {
         Logger::info(format!("Theres no config found with name: {}", repo_name));
         return Ok(());
     }
+
     let found = found.unwrap();
     match std::fs::remove_dir_all(found) {
         Ok(_) => {
@@ -81,7 +83,8 @@ pub(crate) fn remove(repo_name: String) -> Result<(), ZlorbError> {
             ));
         }
     };
-    return Ok(());
+
+    Ok(())
 }
 
 pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
@@ -92,7 +95,7 @@ pub(crate) fn get_all() -> Option<Enumerate<ReadDir>> {
         return Some(dir.enumerate());
     }
 
-    Logger::info(format!("Config directory doesnt exist. Creating it now..."));
+    Logger::info("Config directory doesnt exist. Creating it now...".to_string());
     let create_dir_results = fs::create_dir_all(home_dir.clone());
     if create_dir_results.is_ok() {
         let files = fs::read_dir(home_dir);
@@ -140,7 +143,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
     }
 
     let new_repo = RepositoryConfiguration {
-        name: repo_name.into(),
+        name: repo_name,
         path: path_str,
         remote: "origin".to_string(),
         branch: "master".to_string(),
