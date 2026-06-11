@@ -1,7 +1,5 @@
 # zlorb 🛠️
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/tristonarmstrong/zlorb/1-overview)
-
 A lightweight, systemd-managed continuous integration tool for Git-based projects. zlorb monitors repositories, detects changes, and triggers builds using Bun, 
 keeping your projects up-to-date effortlessly.
 
@@ -30,32 +28,13 @@ sudo systemctl start zlorb
 ```
 
 ## ⚙️ Configuration
-zlorb uses JSON configuration files stored in `~/.config/zlorb/`. The global `service-config.json` sets the monitoring interval, while per-repository `config.json` 
-files define repository-specific settings.
-
-Example `service-config.json`:
-```json
-{
-  "sleep_time": 60
-}
-```
-
-Example repository `config.json`:
-```json
-{
-  "name": "my-repo",
-  "path": "/path/to/repo",
-  "branch": "main",
-  "remote": "origin",
-  "build_command": "bun build"
-}
-```
+> currently being refactored
 
 ## 🖱️ Usage
 Manage repositories with `zlorb-ctl` commands:
 ```bash
 # Add a repository
-zlorb-ctl add --name my-repo --path /path/to/repo --branch main --remote origin --build-command "bun build"
+zlorb-ctl add
 
 # List all configured repositories
 zlorb-ctl list
@@ -81,7 +60,6 @@ zlorb will automatically keep your repositories updated and built, saving you ti
 Want to contribute? Check the System Architecture and Workspace Structure for details. Pull requests and feedback are welcome!
 
 ## Roadmap
-- [ ] watch ctl flag that triggers journalctl log watcher
+- [x] watch ctl flag that triggers journalctl log watcher
 - [ ] web output ctl flag that spins up web server
-- [ ] benchmark to investigate which is more performant (git pull | git fetch -> pull when needed)
-- [ ] need to load configs into memory so daemon doesnt need to keep reading file system every iteration
+- [x] need to load configs into memory so daemon doesnt need to keep reading file system every iteration
