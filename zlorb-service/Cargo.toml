@@ -7,7 +7,4 @@ edition = "2024"
 serde = "1.0.228"
 serde_json = "1.0.145"
 zlorb-lib = { path = "../zlorb-lib" }
-log = "0.4.28"
 git2 = "0.20.2"
-colog = "1.4.0"
-tempfile = "3.27.0"

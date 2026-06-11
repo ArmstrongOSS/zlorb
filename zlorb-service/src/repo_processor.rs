@@ -2,12 +2,10 @@ use git2::{
     AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
     Reference, Remote, RemoteCallbacks,
 };
-use std::{
-    fmt::Debug,
-    path::PathBuf,
-    process::{Output, Stdio},
-};
-use zlorb_lib::{config::RepoConfig, error::ZlorbError};
+use std::{fmt::Debug, path::PathBuf};
+use zlorb_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
+
+use crate::build_system_executor::BuildSystemExecutor;
 
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
@@ -27,6 +25,7 @@ impl Debug for RepoProcessor {
 
 impl RepoProcessor {
     pub fn new(config: RepoConfig) -> Self {
+        // TODO: this should be a function, not in the constructor
         let err = format!("Failed to acquire repo: {}", config.path);
         let repo = git2::Repository::open(&config.path).expect(err.as_str());
 
@@ -38,11 +37,20 @@ impl RepoProcessor {
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
-        let has_updates = self.fetch_remote_updates()?;
-        if has_updates {
-            self.run_build()?;
+        // TODO this should also check if a 'out' folder is expected
+        // and if it is, but ist present, then it should run a build
+        let should_run_build = self.fetch_remote_updates()?;
+        match should_run_build {
+            true => {
+                Logger::info(format!("Found remote updates for {}", self.config.name));
+                let exec = BuildSystemExecutor { processor: self };
+                exec.run_build()
+            }
+            false => {
+                Logger::info(format!("No build needed for {}", self.config.name));
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     fn fetch_remote_updates(&self) -> Result<bool, ZlorbError> {
@@ -53,7 +61,7 @@ impl RepoProcessor {
         let analysis = self._get_analysis()?;
         let (merge_analysis, _, fetch_commit) = analysis;
         if merge_analysis.is_up_to_date() {
-            return Ok(true);
+            return Ok(false);
         }
         if !merge_analysis.is_fast_forward() {
             return Err(ZlorbError::Git(git2::Error::new(
@@ -66,57 +74,6 @@ impl RepoProcessor {
         let remote_ref = self._checkout_and_get_ref()?;
 
         self._should_trigger_update(remote_ref, local_oid)
-    }
-
-    fn pull_node_modules(&self) -> Result<(), ZlorbError> {
-        let p = self.repo_path.to_string_lossy().into_owned();
-        let handle = std::thread::spawn(move || -> Result<Output, ZlorbError> {
-            let package_install_handle = std::process::Command::new("bun")
-                .arg("install")
-                .current_dir(p)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(ZlorbError::Io)?;
-            if !(package_install_handle.stderr.is_empty()) {
-                let err = format!(
-                    "Npm install failed: {}",
-                    String::from_utf8_lossy(&package_install_handle.stderr)
-                );
-                return Err(ZlorbError::Other(err));
-            }
-            Ok(package_install_handle)
-        });
-
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Failed to successfully run install command".into()))?;
-        Ok(())
-    }
-
-    fn run_build(&self) -> Result<(), ZlorbError> {
-        self.pull_node_modules()?;
-        let path = self.config.path.clone();
-        let build_command = self.config.build_command.clone();
-
-        let handle = std::thread::spawn(move || -> Result<(), ZlorbError> {
-            std::env::set_current_dir(path).map_err(ZlorbError::Io)?;
-            let build_handle = std::process::Command::new(build_command)
-                .stdout(Stdio::piped())
-                .output()
-                .map_err(ZlorbError::Io)?;
-            if build_handle.status.code() == Some(1) {
-                return Err(ZlorbError::Other(
-                    "build returned status code 1 resulting in failure".to_string(),
-                ));
-            }
-            Ok(())
-        });
-
-        let _h = handle
-            .join()
-            .map_err(|_| ZlorbError::Other("Faild to join the thread".into()))?;
-
-        Ok(())
     }
 
     fn _setup_fetchoptions_with_creds(&self) -> FetchOptions<'_> {
@@ -149,10 +106,8 @@ impl RepoProcessor {
     }
 
     fn _get_remote(&self) -> Result<Remote<'_>, ZlorbError> {
-        let remote = self
-            .repo
-            .find_remote("origin")
-            .map_err(ZlorbError::Git)?;
+        // TODO DOnt hardcode origin
+        let remote = self.repo.find_remote("origin").map_err(ZlorbError::Git)?;
         Ok(remote)
     }
 
@@ -168,9 +123,7 @@ impl RepoProcessor {
         &self,
     ) -> Result<(MergeAnalysis, MergePreference, AnnotatedCommit<'_>), ZlorbError> {
         let r = &self.repo;
-        let fetch_head = r
-            .find_reference("FETCH_HEAD")
-            .map_err(ZlorbError::Git)?;
+        let fetch_head = r.find_reference("FETCH_HEAD").map_err(ZlorbError::Git)?;
         let fetch_commit = r
             .reference_to_annotated_commit(&fetch_head)
             .map_err(ZlorbError::Git)?;
@@ -188,9 +141,7 @@ impl RepoProcessor {
             .map_err(ZlorbError::Git)?
             .set_target(fetch_commit.id(), "Fast-Forward")
             .map_err(ZlorbError::Git)?;
-        self.repo
-            .set_head(&refname)
-            .map_err(ZlorbError::Git)?;
+        self.repo.set_head(&refname).map_err(ZlorbError::Git)?;
         Ok(())
     }
 
