@@ -4,7 +4,6 @@ pub mod log;
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::Read,
     path::PathBuf,
 };
 

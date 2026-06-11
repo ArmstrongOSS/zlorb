@@ -1,7 +1,5 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
-use std::fs;
-use std::{fs::ReadDir, path::PathBuf};
-use zlorb_lib::config::RepositoryConfiguration;
+use std::path::PathBuf;
 use zlorb_lib::create_config_from_toml;
 use zlorb_lib::{
     create_file_with_content, error::ZlorbError, get_home_dir, read_file_from_filesystem,
@@ -18,6 +16,7 @@ impl ConfigManager {
             home_dir: get_home_dir(),
         }
     }
+
     pub fn initialize_default_config(&self) -> Result<String, ZlorbError> {
         let config_path = self.home_dir.join(".config/zlorb/service-config.json");
         let c = ServiceConfig::default();
@@ -25,12 +24,6 @@ impl ConfigManager {
             .map_err(|e| ZlorbError::SerializationErrorGeneric(e.to_string()))?;
         create_file_with_content(config_path, &f)?;
         Ok(f)
-    }
-
-    pub fn initialize_repo_configs(&self) -> Result<ReadDir, ZlorbError> {
-        let p = self.home_dir.join(".config/zlorb/configs");
-        fs::create_dir_all(&p).map_err(ZlorbError::Io)?;
-        fs::read_dir(p).map_err(ZlorbError::Io)
     }
 
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
@@ -48,6 +41,7 @@ impl ConfigManager {
         if let Err(opened_err) = opened {
             return Err(opened_err);
         }
+        
         serde_json::from_str::<ServiceConfig>(&opened.unwrap())
             .map_err(ZlorbError::SerializationError)
     }
