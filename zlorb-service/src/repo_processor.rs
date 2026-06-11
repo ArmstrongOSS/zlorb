@@ -115,6 +115,7 @@ impl RepoProcessor {
     }
 
     fn _get_remote(&self) -> Result<Remote<'_>, ZlorbError> {
+        // TODO DOnt hardcode origin
         let remote = self.repo.find_remote("origin").map_err(ZlorbError::Git)?;
         Ok(remote)
     }
