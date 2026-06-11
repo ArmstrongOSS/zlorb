@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     process::{Output, Stdio},
 };
-use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
+use zlorb_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
 
 pub struct BunManager;
 impl BunManager {

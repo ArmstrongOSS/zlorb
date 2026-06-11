@@ -1,5 +1,5 @@
 use crate::build_system_executor::{BunManager, managers::rust::RustManager};
-use zlorbrs_lib::{config::RepoConfig, error::ZlorbError};
+use zlorb_lib::{config::RepoConfig, error::ZlorbError};
 
 pub trait Manager {
     fn exec(&self, config: &RepoConfig) -> Result<(), ZlorbError>;
