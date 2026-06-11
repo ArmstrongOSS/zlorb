@@ -2,17 +2,8 @@ use git2::{
     AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
     Reference, Remote, RemoteCallbacks,
 };
-<<<<<<< HEAD:zlorb-service/src/repo_processor.rs
-use std::{
-    fmt::Debug,
-    path::PathBuf,
-    process::{Output, Stdio},
-};
-use zlorb_lib::{config::RepoConfig, error::ZlorbError};
-=======
 use std::{fmt::Debug, path::PathBuf};
-use zlorbrs_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
->>>>>>> 0cc49b0 (pushing latest):zlorbrs-service/src/repo_processor.rs
+use zlorb_lib::{config::RepoConfig, error::ZlorbError, log::Logger};
 
 use crate::build_system_executor::BuildSystemExecutor;
 
