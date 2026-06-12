@@ -61,7 +61,7 @@ pub fn create_config_from_toml(
     let config_path_dir = get_zlorb_config_dir();
     let config_file_path = config_path_dir.join("repositories.toml");
     fs::create_dir_all(&config_path_dir)?;
-    let file_contents = fs::read_to_string(&config_file_path)?;
+    let file_contents = fs::read_to_string(&config_file_path).unwrap_or(String::new());
     let file = OpenOptions::new()
         .read(true)
         .write(true)
