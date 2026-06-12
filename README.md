@@ -31,6 +31,7 @@ sudo systemctl start zlorb
 ### Service Config
 > currently being refactored
 ### Repositories Config
+*~/.config/zlorb/repositories.toml*
 ```txt
 [[repository]]
 name = "SomeRepo"
