@@ -28,7 +28,17 @@ sudo systemctl start zlorb
 ```
 
 ## ⚙️ Configuration
+### Service Config
 > currently being refactored
+### Repositories Config
+```txt
+[[repository]]
+name = "SomeRepo"
+path = "/root/SomeRepo"
+remote = "origin"
+branch = "master"
+build_command = "bun"
+```
 
 ## 🖱️ Usage
 Manage repositories with `zlorb-ctl` commands:
