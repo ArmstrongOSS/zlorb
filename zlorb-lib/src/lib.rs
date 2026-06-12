@@ -4,6 +4,7 @@ pub mod log;
 
 use std::{
     fs::{self, File, OpenOptions},
+    io::Read,
     path::PathBuf,
 };
 
@@ -54,7 +55,9 @@ pub mod shared_test_utils {
 /// This function creates the config file if needed, and returns toml
 ///
 /// The toml can be empty, or populated depending on the state of the file
-pub fn create_config_from_toml() -> Result<(RepositoriesConfigurationFile, File), ZlorbError> {
+pub fn create_config_from_toml(
+    truncate: bool,
+) -> Result<(RepositoriesConfigurationFile, File), ZlorbError> {
     let config_path_dir = get_zlorb_config_dir();
     let config_file_path = config_path_dir.join("repositories.toml");
     fs::create_dir_all(&config_path_dir)?;
@@ -63,7 +66,7 @@ pub fn create_config_from_toml() -> Result<(RepositoriesConfigurationFile, File)
         .read(true)
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(truncate)
         .open(config_file_path)?;
 
     let config_loaded = toml::from_str::<RepositoriesConfigurationFile>(&file_contents).unwrap_or(

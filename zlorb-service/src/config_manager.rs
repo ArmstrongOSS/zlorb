@@ -41,14 +41,14 @@ impl ConfigManager {
         if let Err(opened_err) = opened {
             return Err(opened_err);
         }
-        
+
         serde_json::from_str::<ServiceConfig>(&opened.unwrap())
             .map_err(ZlorbError::SerializationError)
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
         // we need to parse the toml file to data structure
-        let (config, _file) = create_config_from_toml()?;
+        let (config, _file) = create_config_from_toml(false)?;
 
         config
             .repositories

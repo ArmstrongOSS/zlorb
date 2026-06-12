@@ -130,7 +130,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap();
 
-    let (mut config, mut file) = create_config_from_toml()?;
+    let (mut config, mut file) = create_config_from_toml(true)?;
     // we dont want to write a new config to the configs file
     // if the same directory has already been added
     if let Some(found_el) = config
