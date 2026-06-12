@@ -1,6 +1,5 @@
-use log::info;
 use std::process::{Command, ExitStatus};
-use zlorb_lib::error::ZlorbError;
+use zlorb_lib::{error::ZlorbError, log::Logger};
 
 /// Responsible for starting/stopping/restarting the zlorb service daemon
 pub struct DaemonManager {}
@@ -23,22 +22,22 @@ impl DaemonManager {
     }
 
     fn run_service_start_cmd() -> Result<ExitStatus, ZlorbError> {
-        info!("Starting the daemon");
+        Logger::info("Starting the daemon".into());
         let out = Command::new("systemctl")
             .args(["start", "zlorb"])
             .status()
             .map_err(ZlorbError::Io);
-        info!("...Started");
+        Logger::info("...Started".into());
         out
     }
 
     fn run_service_restart_cmd() -> Result<ExitStatus, ZlorbError> {
-        info!("Daemon already running, restarting it");
+        Logger::info("Daemon already running, restarting it".into());
         let out = Command::new("systemctl")
             .args(["restart", "zlorb"])
             .status()
             .map_err(ZlorbError::Io);
-        info!("...Restarted");
+        Logger::info("...Restarted".into());
         out
     }
 }

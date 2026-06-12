@@ -13,13 +13,15 @@ pub enum ZlorbError {
     PermissionDenied(String),
     SerializationErrorGeneric(String),
     SerializationError(serde_json::Error),
+    TomlSerializationError(toml::ser::Error),
+    TomlDeserializationError(toml::de::Error),
     Git(git2::Error),
     Other(String),
 }
 
 impl ZlorbError {
     pub fn print(&self) {
-        Logger::error(format!("{}", self));
+        println!("{}", self);
     }
 }
 
@@ -70,6 +72,14 @@ impl fmt::Display for ZlorbError {
                 Logger::error(format!("Serialization error: {error}"));
                 Ok(())
             }
+            ZlorbError::TomlSerializationError(error) => {
+                Logger::error(format!("Toml Serialization error: {error}"));
+                Ok(())
+            }
+            ZlorbError::TomlDeserializationError(error) => {
+                Logger::error(format!("Toml Deserialization error: {error}"));
+                Ok(())
+            }
         }
     }
 }
@@ -80,5 +90,11 @@ impl Error for ZlorbError {
             ZlorbError::Io(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+impl From<std::io::Error> for ZlorbError {
+    fn from(value: std::io::Error) -> Self {
+        ZlorbError::Io(value)
     }
 }

@@ -1,6 +1,7 @@
 mod utils;
 use crate::utils::{daemon::DaemonManager, repo};
 use clap::{Parser, Subcommand};
+use zlorb_lib::error::ZlorbError;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -26,17 +27,19 @@ enum Commands {
     Watch,
 }
 
-fn main() {
-    // when running the program, use RUST_LOG with (error, info, debug)
-    colog::init();
-
+fn main() -> Result<(), ZlorbError> {
     let args = Args::parse();
 
-    match args.cmd {
+    let res = match args.cmd {
         Commands::Add => repo::add(),
         Commands::List => repo::list(),
-        Commands::Start => DaemonManager::start().unwrap(),
+        Commands::Start => DaemonManager::start(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
         Commands::Watch => repo::watch(),
+    };
+
+    if let Err(e) = res {
+        e.print();
     }
+    Ok(())
 }

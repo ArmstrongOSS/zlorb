@@ -17,10 +17,10 @@ pub struct BuildSystemExecutor<'a> {
 
 impl<'a> BuildSystemExecutor<'a> {
     pub fn run_build(&self) -> Result<(), ZlorbError> {
-        let config = self.processor.config.clone();
+        let config = &self.processor.config;
         match self.determine_strategy() {
-            BuildStrategy::Bun(bun_manager) => bun_manager.exec(&config),
-            BuildStrategy::Rust(rust_manager) => rust_manager.exec(&config),
+            BuildStrategy::Bun(bun_manager) => bun_manager.exec(config),
+            BuildStrategy::Rust(rust_manager) => rust_manager.exec(config),
             BuildStrategy::None => Err(ZlorbError::InvalidConfig(format!(
                 "The build command '{}' provided to repo: {} was invalid",
                 config.build_command, config.name

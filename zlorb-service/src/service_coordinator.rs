@@ -28,7 +28,6 @@ impl ServiceCoordinator {
         // if a repo is added, this service should just be restarted
         Logger::info("---- Setting up repo and service configs".into());
         self.repo_configs = Some(self.config_manager.load_all_repo_configs()?);
-        println!("{:?}", self.repo_configs);
         self.service_config = Some(self.config_manager.load_service_config()?);
         Logger::info("---- Starting service".into());
         loop {
