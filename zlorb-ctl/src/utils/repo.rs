@@ -1,6 +1,9 @@
 use std::{env, io::Write, process};
 use zlorb_lib::{
-    config::RepositoryConfiguration, create_config_from_toml, error::ZlorbError, log::Logger,
+    config::{RepositoriesConfigurationFile, RepositoryConfiguration},
+    create_config_from_toml,
+    error::ZlorbError,
+    log::Logger,
 };
 
 pub(crate) fn watch() -> Result<(), ZlorbError> {
@@ -30,13 +33,8 @@ pub(crate) fn watch() -> Result<(), ZlorbError> {
 pub(crate) fn remove(repo_name: String) -> Result<(), ZlorbError> {
     let (mut config, mut file) = create_config_from_toml(true)?;
     // check if repo exists before attempting remove
-    if let None = config
-        .repositories
-        .iter()
-        .find(|repo| repo.name == repo_name)
-    {
-        Logger::error(format!("repo '{}' not found in tracked repos", repo_name));
-    };
+    throw_if_repo_not_found(&repo_name, &config)?;
+
     let filtered_repos = config
         .repositories
         .into_iter()
@@ -62,16 +60,8 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
         .unwrap();
 
     let (mut config, mut file) = create_config_from_toml(true)?;
-    // we dont want to write a new config to the configs file
-    // if the same directory has already been added
-    if let Some(found_el) = config
-        .repositories
-        .iter()
-        .find(|item| item.name == repo_name)
-    {
-        let err = format!("{} is already in the configuration", found_el.name);
-        return Err(ZlorbError::Other(err));
-    }
+
+    throw_if_repo_exists(&repo_name, &config)?;
 
     let new_repo = RepositoryConfiguration {
         name: repo_name,
@@ -81,9 +71,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
         build_command: String::new(),
     };
 
-    println!("{:?}", config);
     config.repositories.push(new_repo);
-    println!("{:?}", config.repositories);
     let out_toml = toml::to_string(&config).map_err(ZlorbError::TomlSerializationError)?;
     file.write_all(out_toml.as_bytes())?;
     Ok(())
@@ -94,5 +82,37 @@ pub(crate) fn list() -> Result<(), ZlorbError> {
 
     let mapped_repos = config.repositories.iter().map(|item| item.path.clone());
     println!("{:#?}", Vec::from_iter(mapped_repos));
+    Ok(())
+}
+
+fn throw_if_repo_exists(
+    repo_name: &String,
+    config: &RepositoriesConfigurationFile,
+) -> Result<(), ZlorbError> {
+    if let Some(found_el) = config
+        .repositories
+        .iter()
+        .find(|item| &item.name == repo_name)
+    {
+        let err = format!("{} is already in the configuration", found_el.name);
+        return Err(ZlorbError::Other(err));
+    }
+
+    Ok(())
+}
+
+fn throw_if_repo_not_found(
+    repo_name: &String,
+    config: &RepositoriesConfigurationFile,
+) -> Result<(), ZlorbError> {
+    if let None = config
+        .repositories
+        .iter()
+        .find(|repo| &repo.name == repo_name)
+    {
+        let err = format!("repo '{}' not found in tracked repos", repo_name);
+        return Err(ZlorbError::Other(err));
+    };
+
     Ok(())
 }
