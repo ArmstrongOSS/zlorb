@@ -159,13 +159,9 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
 }
 
 pub(crate) fn list() -> Result<(), ZlorbError> {
-    let repos = self::get_all();
-    if repos.is_none() {
-        Logger::info("No configurations found".into());
-        return Ok(());
-    }
+    let (config, _) = create_config_from_toml(false)?;
 
-    let mapped_repos = repos.unwrap().map(|item| item.1.unwrap().path());
+    let mapped_repos = config.repositories.iter().map(|item| item.path.clone());
     println!("{:#?}", Vec::from_iter(mapped_repos));
     Ok(())
 }
