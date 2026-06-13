@@ -25,6 +25,11 @@ enum Commands {
     Start,
     /// runs a journalctl watcher to see realtime logs
     Watch,
+    /// runs the zlorb-web binary to start a web server;
+    ///
+    /// This is being compiled as a dependency to ctl because the expectation
+    /// is that if youre going to use the web ui you dont need to use the ctl
+    Web,
 }
 
 fn main() -> Result<(), ZlorbError> {
@@ -36,6 +41,10 @@ fn main() -> Result<(), ZlorbError> {
         Commands::Start => DaemonManager::start(),
         Commands::Remove { repo_name } => repo::remove(repo_name),
         Commands::Watch => repo::watch(),
+        Commands::Web => {
+            zlorb_web::run();
+            Ok(())
+        }
     };
 
     if let Err(e) = res {
