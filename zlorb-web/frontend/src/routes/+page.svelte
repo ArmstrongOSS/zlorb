@@ -1,8 +1,7 @@
 <script lang="ts">
-    import type { PageProps } from './$types';
-	let { data }: PageProps = $props();
+    import type { PageProps } from "./$types";
 
-    console.log();
+    const { data }: PageProps = $props();
 </script>
 
 <main>

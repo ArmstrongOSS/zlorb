@@ -1,8 +1,6 @@
-import type { PageLoad } from './$types';
+import type { PageLoadEvent } from './$types';
 
-export async function load({ params, fetch }) {
+export async function load({ params, fetch }: PageLoadEvent) {
     const res = await fetch('/api/repositories');
-    const data = await res.json();
-
-    return { repositories: data };
+    return { repositories: await res.json() };
 }
