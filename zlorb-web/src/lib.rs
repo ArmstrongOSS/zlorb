@@ -5,16 +5,20 @@ use axum::{
     routing::{get, post},
 };
 use tokio::net::TcpListener;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use zlorb_lib::config::RepositoryConfiguration;
 
+const IP: &str = "0.0.0.0";
+const PORT: &str = "3000";
+
 #[tokio::main]
-async fn main() {
+pub async fn run() {
     let (config, _) =
         zlorb_lib::create_config_from_toml(false).expect("Failed to load zlorb configuration");
 
     let webhook_routes = Router::new().route("/webhook", post(handle_webhook));
-    let frontend_service = ServeDir::new("zlorb-web/dist");
+    let frontend_service = ServeDir::new("zlorb-web/dist")
+        .not_found_service(ServeFile::new("zlorb-web/frontend/public/404.html"));
 
     let app = Router::new()
         .nest("/api", webhook_routes)
@@ -22,9 +26,10 @@ async fn main() {
         .fallback_service(frontend_service)
         .with_state(config.repositories);
 
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let binding = format!("{IP}:{PORT}");
+    let listener = TcpListener::bind(&binding).await.unwrap();
+    println!("Listening on http://{}", binding);
 
-    println!("Listening on http://127.0.0.1:3000/");
     axum::serve(listener, app).await.unwrap();
 }
 
