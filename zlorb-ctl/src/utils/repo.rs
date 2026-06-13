@@ -3,7 +3,6 @@ use zlorb_lib::{
     config::{RepositoriesConfigurationFile, RepositoryConfiguration},
     create_config_from_toml,
     error::ZlorbError,
-    log::Logger,
 };
 
 pub(crate) fn watch() -> Result<(), ZlorbError> {
@@ -105,10 +104,11 @@ fn throw_if_repo_not_found(
     repo_name: &String,
     config: &RepositoriesConfigurationFile,
 ) -> Result<(), ZlorbError> {
-    if let None = config
+    if config
         .repositories
         .iter()
         .find(|repo| &repo.name == repo_name)
+        .is_none()
     {
         let err = format!("repo '{}' not found in tracked repos", repo_name);
         return Err(ZlorbError::Other(err));
