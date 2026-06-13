@@ -3,12 +3,12 @@ default: install
 install-bins:
   cargo install --path zlorb-ctl
   cargo install --path zlorb-service
-  ln -sf ~/.cargo/bin/zlorb-service /usr/bin/zlorb-service
+  sudo ln -sf ~/.cargo/bin/zlorb-service /usr/bin/zlorb-service
 
 install-service:
-  cp zlorb.service /usr/lib/systemd/system/zlorb.service
-  systemctl daemon-reload
-  systemctl enable zlorb.service --now
+  sudo cp zlorb.service /usr/lib/systemd/system/zlorb.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable zlorb.service --now
 
 install: install-bins install-service
 
