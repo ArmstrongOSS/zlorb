@@ -1,44 +1,49 @@
-use axum::{
-    Json, Router,
-    extract::State,
-    response::IntoResponse,
-    routing::{get, post},
-};
-use tokio::net::TcpListener;
-use tower_http::services::{ServeDir, ServeFile};
-use zlorb_lib::config::RepositoryConfiguration;
+mod template;
+
+use askama::Template;
+use axum::{Router, response::Html, routing::get};
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const IP: &str = "0.0.0.0";
 const PORT: &str = "3000";
+const UPTIME_POLLING_INTERVAL_SEC: u64 = 30;
+
+#[derive(Template)]
+#[template(path = "index.html")]
+struct Index {
+    title: String,
+}
+
+impl Index {
+    fn new() -> Self {
+        Self {
+            title: "HTMX + Askama".to_string(),
+        }
+    }
+}
+
+static START_TIME_SECS: LazyLock<u64> = LazyLock::new(|| {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u64
+});
+
+async fn system_uptime() -> impl IntoResponse {
+    axum::Json(std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
+}
 
 #[tokio::main]
 pub async fn run() {
-    let (config, _) =
-        zlorb_lib::create_config_from_toml(false).expect("Failed to load zlorb configuration");
-
-    let webhook_routes = Router::new().route("/webhook", post(handle_webhook));
-    let frontend_service = ServeDir::new("zlorb-web/dist")
-        .not_found_service(ServeFile::new("zlorb-web/frontend/public/404.html"));
-
     let app = Router::new()
-        .nest("/api", webhook_routes)
-        .route("/api/repositories", get(get_tracked_repositories))
-        .fallback_service(frontend_service)
-        .with_state(config.repositories);
+        .route("/", get(get_root))
+        .route("/api/system", get(system_uptime));
 
     let binding = format!("{IP}:{PORT}");
-    let listener = TcpListener::bind(&binding).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&binding).await.unwrap();
     println!("Listening on http://{}", binding);
 
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_tracked_repositories(
-    State(repositories): State<Vec<RepositoryConfiguration>>,
-) -> impl IntoResponse {
-    Json(repositories)
-}
-
-async fn handle_webhook(Json(payload): Json<serde_json::Value>) {
-    println!("Received webhook: {:#?}", payload);
+fn get_root() -> Html<Index> {
+    Index::new().render().unwrap().into()
 }
