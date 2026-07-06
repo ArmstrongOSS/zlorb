@@ -22,10 +22,4 @@ service:
   cargo run -p zlorb-service
 
 web:
-  bun run --cwd zlorb-web/frontend build && cargo run -p zlorb-web
-  
-# web: build-frontend
-#   cargo run -p zlorb-web
-
-# build-zlorb-web-frontend:
-#   bun run --cwd zlorb-web/frontend build
+  cargo run -p zlorb-ctl web  

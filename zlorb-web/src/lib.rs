@@ -1,44 +1,41 @@
+mod template;
+
+use askama::Template;
 use axum::{
-    Json, Router,
-    extract::State,
-    response::IntoResponse,
-    routing::{get, post},
+    Router,
+    response::{Html, IntoResponse},
+    routing::get,
 };
-use tokio::net::TcpListener;
-use tower_http::services::{ServeDir, ServeFile};
-use zlorb_lib::config::RepositoryConfiguration;
+use zlorb_lib::create_config_from_toml;
+
+use crate::template::Index;
 
 const IP: &str = "0.0.0.0";
 const PORT: &str = "3000";
 
 #[tokio::main]
 pub async fn run() {
-    let (config, _) =
-        zlorb_lib::create_config_from_toml(false).expect("Failed to load zlorb configuration");
-
-    let webhook_routes = Router::new().route("/webhook", post(handle_webhook));
-    let frontend_service = ServeDir::new("zlorb-web/dist")
-        .not_found_service(ServeFile::new("zlorb-web/frontend/public/404.html"));
-
-    let app = Router::new()
-        .nest("/api", webhook_routes)
-        .route("/api/repositories", get(get_tracked_repositories))
-        .fallback_service(frontend_service)
-        .with_state(config.repositories);
+    let app = Router::new().route("/", get(get_root));
 
     let binding = format!("{IP}:{PORT}");
-    let listener = TcpListener::bind(&binding).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&binding).await.unwrap();
     println!("Listening on http://{}", binding);
 
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_tracked_repositories(
-    State(repositories): State<Vec<RepositoryConfiguration>>,
-) -> impl IntoResponse {
-    Json(repositories)
-}
+async fn get_root() -> impl IntoResponse {
+    let mut index = Index::new();
+    let config = create_config_from_toml(false).unwrap().0;
+    let repos = config.repositories;
+    let mapped_repos: Vec<String> = repos.iter().map(|x| x.path.clone()).collect();
 
-async fn handle_webhook(Json(payload): Json<serde_json::Value>) {
-    println!("Received webhook: {:#?}", payload);
+    index.repos = if mapped_repos.len() < 1 {
+        None
+    } else {
+        Some(mapped_repos)
+    };
+
+    let index_render = index.render().unwrap();
+    Html(index_render)
 }

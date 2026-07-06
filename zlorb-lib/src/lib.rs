@@ -46,11 +46,6 @@ pub fn check_file_exist(path: PathBuf) -> bool {
     std::fs::exists(path).unwrap_or_default()
 }
 
-pub mod shared_test_utils {
-    use std::sync::Mutex;
-    pub static ENV_MUTEX: Mutex<()> = Mutex::new(());
-}
-
 /// This function creates the config file if needed, and returns toml
 ///
 /// The toml can be empty, or populated depending on the state of the file
