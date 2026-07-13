@@ -15,16 +15,23 @@ impl DaemonManager {
     }
 
     fn run_process_check() -> Result<ExitStatus, ZlorbError> {
-        Command::new("systemctl")
-            .args(["is-active", "--quiet", "zlorb"])
+        let is_root = std::env::var("UID").map(|u| u == "0").unwrap_or(false);
+        let mut cmd = Command::new("systemctl");
+        if !is_root {
+            cmd.arg("--user");
+        }
+        cmd.args(["is-active", "--quiet", "zlorb"])
             .status()
             .map_err(ZlorbError::Io)
     }
 
     fn run_service_start_cmd() -> Result<ExitStatus, ZlorbError> {
         Logger::info("Starting the daemon".into());
-        let out = Command::new("systemctl")
-            .args(["start", "zlorb"])
+        let mut cmd = Command::new("systemctl");
+        if std::env::var("UID").map(|u| u == "0").unwrap_or(false) == false {
+            cmd.arg("--user");
+        }
+        let out = cmd.args(["start", "zlorb"])
             .status()
             .map_err(ZlorbError::Io);
         Logger::info("...Started".into());
@@ -33,8 +40,11 @@ impl DaemonManager {
 
     fn run_service_restart_cmd() -> Result<ExitStatus, ZlorbError> {
         Logger::info("Daemon already running, restarting it".into());
-        let out = Command::new("systemctl")
-            .args(["restart", "zlorb"])
+        let mut cmd = Command::new("systemctl");
+        if std::env::var("UID").map(|u| u == "0").unwrap_or(false) == false {
+            cmd.arg("--user");
+        }
+        let out = cmd.args(["restart", "zlorb"])
             .status()
             .map_err(ZlorbError::Io);
         Logger::info("...Restarted".into());

@@ -7,12 +7,17 @@ use zlorb_lib::{
 };
 
 pub(crate) fn watch() -> Result<(), ZlorbError> {
-    let out = process::Command::new("journalctl")
-        .arg("-f")
-        .arg("-u")
-        .arg("zlorb")
-        .status()
-        .map_err(ZlorbError::Io);
+    let is_root = std::env::var("UID").map(|u| u == "0").unwrap_or(false);
+    
+    let mut cmd = process::Command::new("journalctl");
+    cmd.arg("-f");
+    if is_root {
+        cmd.arg("-u").arg("zlorb");
+    } else {
+        cmd.arg("--user").arg("-u").arg("zlorb");
+    }
+
+    let out = cmd.status().map_err(ZlorbError::Io);
     match out {
         Ok(status) => {
             if status.success() {
