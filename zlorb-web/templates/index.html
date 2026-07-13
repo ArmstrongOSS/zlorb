@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>{{ title }}</title>
+</head>
+<body>
+    <h1>Welcome to HTMX + Askama</h1>
+    <!-- System Uptime Display: polled via HTMX interval, rendered from JSON response -->
+    <p class="body-sm">
+        Uptime &middot;
+        <a id="uptime-hx-target" href="/api/system">
+            <span id="uptime"></span>
+        </a>
+    </p>
+
+    <!-- Load HTMX script (HTMX ships its own bundle) -->
+    <script src="https://unpkg.com/htmx.org@2.0.3"></script>
+</body>
+</html>
