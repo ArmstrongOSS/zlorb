@@ -57,7 +57,7 @@ impl ServiceCoordinator {
                 match repo.update_from_remote() {
                     Ok(_) => Logger::info(format!("Successfully updated {}", repo.config.name)),
                     Err(e) => {
-                        Logger::error(format!("Failed to update {}: {:?}", repo.config.name, e));
+                        Logger::error(format!("Failed to update {}: {:?}. This may be a configuration issue for this branch; ensure the details in ~/.config/zlorb/repositories.toml are accurate.", repo.config.name, e));
                         e.print();
                     }
                 }
