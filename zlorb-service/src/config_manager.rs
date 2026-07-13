@@ -1,10 +1,10 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 use std::path::PathBuf;
-use zlorb_lib::create_config_from_toml;
-use zlorb_lib::log::Logger;
 use zlorb_lib::{
-    create_file_with_content, error::ZlorbError, get_home_dir, read_file_from_filesystem,
+    create_config_from_toml, error::ZlorbError, get_home_dir, read_file_from_filesystem,
+    create_file_with_content,
 };
+use zlorb_lib::log::Logger;
 
 #[derive(Default)]
 pub struct ConfigManager {
@@ -19,16 +19,15 @@ impl ConfigManager {
     }
 
     pub fn initialize_default_config(&self) -> Result<String, ZlorbError> {
-        let config_path = self.home_dir.join(".config/zlorb/service-config.json");
+        let config_path = self.home_dir.join(".config/zlorb/service-config.toml");
         let c = ServiceConfig::default();
-        let f = serde_json::to_string(&c)
-            .map_err(|e| ZlorbError::SerializationErrorGeneric(e.to_string()))?;
+        let f = toml::to_string(&c).map_err(|e| ZlorbError::TomlSerializationError(e))?;
         create_file_with_content(config_path, &f)?;
         Ok(f)
     }
 
     pub fn load_service_config(&self) -> Result<ServiceConfig, ZlorbError> {
-        let config_file_path = self.home_dir.join(".config/zlorb/service-config.json");
+        let config_file_path = self.home_dir.join(".config/zlorb/service-config.toml");
 
         let opened: Result<String, ZlorbError> =
             match read_file_from_filesystem(config_file_path.clone()) {
@@ -43,8 +42,8 @@ impl ConfigManager {
             return Err(opened_err);
         }
 
-        serde_json::from_str::<ServiceConfig>(&opened.unwrap())
-            .map_err(ZlorbError::SerializationError)
+        toml::from_str::<ServiceConfig>(&opened.unwrap())
+            .map_err(|e| ZlorbError::TomlDeserializationError(e))
     }
 
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
