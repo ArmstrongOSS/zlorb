@@ -6,9 +6,16 @@ install-bins:
   sudo ln -sf ~/.cargo/bin/zlorb-service /usr/bin/zlorb-service
 
 install-service:
-  sudo cp zlorb.service /usr/lib/systemd/system/zlorb.service
-  sudo systemctl daemon-reload
-  sudo systemctl enable zlorb.service --now
+  @if [ "$(id -u)" = "0" ]; then \
+    sudo cp zlorb.service /usr/lib/systemd/system/zlorb.service; \
+    sudo systemctl daemon-reload; \
+    sudo systemctl enable zlorb.service --now; \
+  else \
+    mkdir -p ~/.config/systemd/user/; \
+    cp zlorb.service ~/.config/systemd/user/zlorb.service; \
+    systemctl --user daemon-reload; \
+    systemctl --user enable zlorb.service --now; \
+  fi
 
 install: install-bins install-service
 
