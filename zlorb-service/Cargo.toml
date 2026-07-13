@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-serde = "1.0.228"
-serde_json = "1.0.145"
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
 zlorb-lib = { path = "../zlorb-lib" }
-git2 = "0.20.2"
+git2 = { workspace = true }
