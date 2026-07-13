@@ -7,6 +7,7 @@ pub struct RepositoryConfiguration {
     pub remote: String,
     pub branch: String,
     pub build_command: String,
+    pub out_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

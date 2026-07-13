@@ -1,6 +1,7 @@
 use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 use std::path::PathBuf;
 use zlorb_lib::create_config_from_toml;
+use zlorb_lib::log::Logger;
 use zlorb_lib::{
     create_file_with_content, error::ZlorbError, get_home_dir, read_file_from_filesystem,
 };
@@ -49,12 +50,15 @@ impl ConfigManager {
     pub fn load_all_repo_configs(&self) -> Result<Vec<RepoProcessor>, ZlorbError> {
         // we need to parse the toml file to data structure
         let (config, _file) = create_config_from_toml(false)?;
-
-        config
-            .repositories
-            .into_iter()
-            .map(|repo| Ok(RepoProcessor::new(repo)))
-            .collect::<Result<Vec<RepoProcessor>, ZlorbError>>()
+        Logger::info(format!("config: {:#?}", config));
+        let repos = config.repositories;
+        Logger::info(format!("repos: {:#?}", repos));
+        let mapped = repos
+            .iter()
+            .map(|repo| Ok(RepoProcessor::new(repo.clone())))
+            .collect::<Result<Vec<RepoProcessor>, ZlorbError>>();
+        Logger::info(format!("mapped repos: {:#?}", mapped));
+        mapped
     }
 
     pub fn _load_repo_config(&self, name: String) -> Result<String, ZlorbError> {

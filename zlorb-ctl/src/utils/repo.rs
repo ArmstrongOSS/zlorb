@@ -3,6 +3,7 @@ use zlorb_lib::{
     config::{RepositoriesConfigurationFile, RepositoryConfiguration},
     create_config_from_toml,
     error::ZlorbError,
+    log::Logger,
 };
 
 pub(crate) fn watch() -> Result<(), ZlorbError> {
@@ -68,6 +69,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
         remote: "origin".to_string(),
         branch: "master".to_string(),
         build_command: String::new(),
+        out_dir: None,
     };
 
     config.repositories.push(new_repo);
@@ -78,6 +80,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
 
 pub(crate) fn list() -> Result<(), ZlorbError> {
     let (config, _) = create_config_from_toml(false)?;
+    Logger::info(format!("config: {:#?}", config));
 
     let mapped_repos = config.repositories.iter().map(|item| item.path.clone());
     println!("{:#?}", Vec::from_iter(mapped_repos));

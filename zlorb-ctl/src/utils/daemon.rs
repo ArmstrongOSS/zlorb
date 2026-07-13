@@ -8,8 +8,8 @@ impl DaemonManager {
         let out_status = DaemonManager::run_process_check()?;
         let is_running = out_status.success();
         match is_running {
-            true => DaemonManager::run_service_start_cmd()?,
-            false => DaemonManager::run_service_restart_cmd()?,
+            true => DaemonManager::run_service_restart_cmd()?,
+            false => DaemonManager::run_service_start_cmd()?,
         };
         Ok(())
     }

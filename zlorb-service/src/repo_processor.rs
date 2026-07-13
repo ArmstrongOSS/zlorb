@@ -25,7 +25,7 @@ impl Debug for RepoProcessor {
 
 impl RepoProcessor {
     pub fn new(config: RepositoryConfiguration) -> Self {
-        // TODO: this should be a function, not in the constructor
+        Logger::info(format!("Initializing RepoProcessor for {}", config.name));
         let err = format!("Failed to acquire repo: {}", config.path);
         let repo = git2::Repository::open(&config.path).expect(err.as_str());
 
@@ -37,18 +37,49 @@ impl RepoProcessor {
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
-        // TODO this should also check if a 'out' folder is expected
-        // and if it is, but ist present, then it should run a build
-        let should_run_build = self.fetch_remote_updates()?;
+        Logger::info(format!("Updating from remote for {}", self.config.name));
+        let has_updates = self.fetch_remote_updates()?;
+        Logger::info(format!("Remote updates found: {}", has_updates));
+
+        let out_dir_missing = self.config.out_dir.is_some() && !self.check_if_out_dir_exists()?;
+        Logger::info(format!("Out directory missing (expected): {}", out_dir_missing));
+
+        let should_run_build = has_updates || out_dir_missing;
+        Logger::info(format!("Should run build: {}", should_run_build));
+
         match should_run_build {
             true => {
-                Logger::info(format!("Found remote updates for {}", self.config.name));
+                Logger::info(format!(
+                    "Found updates or missing output dir for {}. Pulling changes...",
+                    self.config.name
+                ));
                 let exec = BuildSystemExecutor { processor: self };
                 exec.run_build()
             }
             false => {
                 Logger::info(format!("No build needed for {}", self.config.name));
                 Ok(())
+            }
+        }
+    }
+
+    fn check_if_out_dir_exists(&self) -> Result<bool, ZlorbError> {
+        Logger::info(format!("Checking out dir existence for {}", self.config.name));
+        match &self.config.out_dir {
+            Some(path_str) => {
+                let path = PathBuf::from(path_str);
+                let full_path = if path.is_absolute() {
+                    path
+                } else {
+                    self.repo_path.join(path)
+                };
+                let exists = full_path.exists();
+                Logger::info(format!("Out dir {} exists: {}", full_path.display(), exists));
+                Ok(exists)
+            }
+            None => {
+                Logger::info("No out_dir specified in config.".to_string());
+                Ok(true)
             }
         }
     }

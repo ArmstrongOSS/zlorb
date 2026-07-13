@@ -32,6 +32,7 @@ impl ServiceCoordinator {
         Logger::info("---- Starting service".into());
         loop {
             // we're throttling the loop so as to not peg the cpu at max usage
+            Logger::info("---- loop".into());
             self.wait_for_run();
             self.run_cycle()?;
         }
@@ -50,11 +51,15 @@ impl ServiceCoordinator {
     fn run_cycle(&self) -> Result<(), ZlorbError> {
         let repo_configs = self.repo_configs.as_ref();
         if let Some(repos) = repo_configs {
+            Logger::info(format!("repos: {:#?}", repos));
             repos.iter().for_each(|repo| {
                 Logger::info(format!("Updating repo: {}", repo.config.name));
-                let _r = repo.update_from_remote();
-                if let Err(e) = _r {
-                    e.print();
+                match repo.update_from_remote() {
+                    Ok(_) => Logger::info(format!("Successfully updated {}", repo.config.name)),
+                    Err(e) => {
+                        Logger::error(format!("Failed to update {}: {:?}", repo.config.name, e));
+                        e.print();
+                    }
                 }
             });
             return Ok(());
