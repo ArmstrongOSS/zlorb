@@ -88,6 +88,12 @@ impl ConfigManager {
         let repos = self.load_repo_configurations()?;
         let mut processors = Vec::new();
         for repo in repos {
+            if let Err(e) = repo.resolved_build_strategy() {
+                Logger::error(format!(
+                    "Invalid build strategy for repo {}: {:?}",
+                    repo.name, e
+                ));
+            }
             match RepoProcessor::new(repo.clone()) {
                 Ok(processor) => processors.push(processor),
                 Err(e) => {

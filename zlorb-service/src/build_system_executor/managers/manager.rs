@@ -8,5 +8,4 @@ pub trait Manager {
 pub enum BuildStrategy {
     Bun(BunManager),
     Rust(RustManager),
-    None,
 }
