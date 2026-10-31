@@ -3,6 +3,7 @@ use zlorb_lib::{
     config::{RepositoriesConfigurationFile, RepositoryConfiguration},
     create_config_from_toml,
     error::ZlorbError,
+    git::is_git_repo,
     log::Logger,
 };
 
@@ -51,13 +52,14 @@ pub(crate) fn remove(repo_name: String) -> Result<(), ZlorbError> {
     Ok(())
 }
 
-/// Adds the current working directory as a tracked repository in the global configuration.
-/// **Global configs location:** `~/.config/zlorb`
-///
-/// TODO: Ensure the directory being added is a valid git repository
 pub(crate) fn add() -> Result<(), ZlorbError> {
     let cwd = env::current_dir()?;
     let path_str = cwd.to_string_lossy().to_string();
+
+    if !is_git_repo(&path_str) {
+        let err = format!("{} is not a valid git repository", path_str);
+        return Err(ZlorbError::Other(err));
+    }
 
     let repo_name = cwd
         .file_name()

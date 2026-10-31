@@ -1,11 +1,17 @@
 use git2::Repository;
-use log::error;
+
+use crate::log::Logger;
+
+/// Returns true if the given path opens as a git repository.
+pub fn is_git_repo(path: &str) -> bool {
+    Repository::open(path).is_ok()
+}
 
 pub fn fetch_update(repo_path: String) {
-    let repo: Option<Repository> = match Repository::open(repo_path) {
+    let _repo: Option<Repository> = match Repository::open(repo_path) {
         Ok(repo) => Some(repo),
         Err(e) => {
-            error!("failed to init: {}", e);
+            Logger::error(format!("failed to init: {}", e));
             None
         }
     };
