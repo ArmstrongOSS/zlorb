@@ -140,7 +140,7 @@ impl RepoProcessor {
             ));
         }
         Err(ZlorbError::Other(format!(
-            "Refusing to fast-forward {}: {} would be overwritten; commit or discard them first",
+            "Refusing to fast-forward {}: {} would be overwritten. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
             self.config.name,
             reasons.join(" and ")
         )))
@@ -161,7 +161,10 @@ impl RepoProcessor {
         let tree = commit.tree().map_err(ZlorbError::Git)?;
         let mut collisions: Vec<String> = Vec::new();
         tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if entry.kind() == Some(git2::ObjectType::Blob) {
+            if matches!(
+                entry.kind(),
+                Some(git2::ObjectType::Blob) | Some(git2::ObjectType::Commit)
+            ) {
                 let path = PathBuf::from(root).join(entry.name().unwrap_or_default());
                 let components: Vec<_> = path.components().collect();
                 let mut prefix = PathBuf::new();
@@ -199,7 +202,7 @@ impl RepoProcessor {
             .map_err(ZlorbError::Git)?;
         Ok(statuses
             .iter()
-            .filter_map(|entry| entry.path().map(|path| path.to_string()))
+            .map(|entry| String::from_utf8_lossy(entry.path_bytes()).into_owned())
             .collect())
     }
 
@@ -249,30 +252,45 @@ impl RepoProcessor {
         let Ok(index) = self.repo.index() else {
             return;
         };
-        let mut added: Vec<PathBuf> = Vec::new();
+        let mut added: Vec<(PathBuf, Oid)> = Vec::new();
         let _ = fetch_tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
-            if entry.kind() == Some(git2::ObjectType::Blob) {
+            if matches!(
+                entry.kind(),
+                Some(git2::ObjectType::Blob) | Some(git2::ObjectType::Commit)
+            ) {
                 let path = PathBuf::from(root).join(entry.name().unwrap_or_default());
                 if local_tree.get_path(&path).is_err() {
-                    added.push(path);
+                    added.push((path, entry.id()));
                 }
             }
             git2::TreeWalkResult::Ok
         });
-        for path in added {
+        for (path, entry_id) in added {
             let full_path = workdir.join(&path);
-            if index.get_path(&path, 0).is_none()
-                && std::fs::symlink_metadata(&full_path)
-                    .map(|metadata| !metadata.is_dir())
-                    .unwrap_or(false)
-            {
-                if let Err(e) = std::fs::remove_file(&full_path) {
-                    Logger::error(format!(
-                        "Failed to remove {} left by a failed fast-forward: {}",
-                        full_path.display(),
-                        e
-                    ));
-                }
+            if index.get_path(&path, 0).is_some() {
+                continue;
+            }
+            let is_file = std::fs::symlink_metadata(&full_path)
+                .map(|metadata| !metadata.is_dir())
+                .unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+            let Ok(contents) = std::fs::read(&full_path) else {
+                continue;
+            };
+            let Ok(disk_id) = Oid::hash_object(git2::ObjectType::Blob, &contents) else {
+                continue;
+            };
+            if disk_id != entry_id {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_file(&full_path) {
+                Logger::error(format!(
+                    "Failed to remove {} left by a failed fast-forward: {}",
+                    full_path.display(),
+                    e
+                ));
             }
         }
     }
@@ -707,6 +725,11 @@ mod tests {
         let watched = git2::Repository::open(&watched_path).unwrap();
         assert_eq!(head_oid(&watched), v1);
         drop(watched);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
 
         std::fs::remove_file(watched_path.join(".git/index.lock")).unwrap();
         processor_for(&watched_path).update_from_remote().unwrap();
