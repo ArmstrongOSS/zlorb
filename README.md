@@ -74,10 +74,13 @@ name = "SomeRepo"
 path = "/home/you/SomeRepo"
 remote = "origin"
 branch = "master"
-build_command = "bun"
+build_strategy = "bun"
+build_command = ""
 ```
 
-Edit `build_command` (and `branch`/`remote` when they differ) after adding a repo; the daemon picks the change up on its next cycle.
+Set `build_strategy` (and `branch`/`remote` when they differ) after adding a repo; the daemon picks the change up on its next cycle. Valid strategies are `"bun"` and `"rust"` (`"cargo"` is accepted as an alias for `"rust"`). The selected manager owns dependency installation and the build itself, so `build_strategy` is the only build choice to make. An unknown or missing strategy is a config error for that repo: the daemon logs it on every reload, and when a build is triggered for that repo it fails with that error instead of guessing a manager.
+
+Migration from older configs: a repo with no `build_strategy` keeps working only when its legacy `build_command` is exactly `"bun"`, `"cargo"`, or `"cargo build"`. Any other legacy value (for example `"cargo build --release"` or `"bun run build"`) no longer selects a manager by substring; add an explicit `build_strategy` line to that repo instead.
 
 ## 🖱️ Usage
 
@@ -102,7 +105,7 @@ The daemon is the systemd service registered by `zlorb-ctl setup`: a per-user se
 
 1. Install zlorb as described above and run `zlorb-ctl setup`.
 2. From inside a git repository, run `zlorb-ctl add`.
-3. Edit `build_command` for the repo in `<config dir>/repositories.toml`.
+3. Edit `build_strategy` for the repo in `<config dir>/repositories.toml` (`"bun"` or `"rust"`).
 4. Monitor build logs via `journalctl --user -u zlorb` (`journalctl -u zlorb` for a system service).
 
 zlorb will automatically keep your repositories updated and built, saving you time and effort.

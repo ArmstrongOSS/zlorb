@@ -76,6 +76,7 @@ pub(crate) fn add() -> Result<(), ZlorbError> {
         path: path_str,
         remote: "origin".to_string(),
         branch: "master".to_string(),
+        build_strategy: None,
         build_command: String::new(),
         out_dir: None,
     };
