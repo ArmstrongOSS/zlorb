@@ -2,7 +2,7 @@ use crate::{repo_processor::RepoProcessor, service_config::ServiceConfig};
 use std::path::PathBuf;
 use zlorb_lib::config::RepositoryConfiguration;
 use zlorb_lib::log::Logger;
-use zlorb_lib::{create_file_with_content, error::ZlorbError, get_home_dir};
+use zlorb_lib::{create_file_with_content, error::ZlorbError, get_zlorb_config_dir};
 
 pub struct ConfigManager {
     config_dir: PathBuf,
@@ -10,7 +10,7 @@ pub struct ConfigManager {
 
 impl ConfigManager {
     pub fn new() -> Self {
-        Self::with_config_dir(get_home_dir().join(".config/zlorb"))
+        Self::with_config_dir(get_zlorb_config_dir())
     }
 
     pub fn with_config_dir(config_dir: PathBuf) -> Self {

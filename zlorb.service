@@ -3,10 +3,11 @@ Description=Zlorb Daemon
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/zlorb-service
+ExecStart=%h/.cargo/bin/zlorb-service
 Type=simple
 Restart=always
 Environment="RUST_LOG=zlorb_service"
+Environment="ZLORB_CONFIG_DIR=%h/.config/zlorb"
 
 [Install]
 WantedBy=default.target

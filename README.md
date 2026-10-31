@@ -15,55 +15,95 @@ It watches Git repositories for updates, performs safe fast-forward merges, and 
 - 🖥️ **CLI Management**: Easily add, remove, or list repositories without service restarts.
 
 ## 🛠️ Installation
-Clone the repository:
+
+Prerequisites: a Rust toolchain (via [rustup](https://rustup.rs/)) and Linux with systemd.
+
+Install both binaries with Cargo — no clone and no `just` required:
+
 ```bash
-git clone <repository-url>
+cargo install --git https://github.com/ArmstrongOSS/zlorb zlorb-ctl
+cargo install --git https://github.com/ArmstrongOSS/zlorb zlorb-service
 ```
 
-Build and install:
+Then set up the daemon:
+
 ```bash
-just build
-sudo systemctl enable zlorb
-sudo systemctl start zlorb
+zlorb-ctl setup
 ```
+
+`setup` does the rest in one step:
+
+- creates the config directory and an empty `repositories.toml` in it (existing files are left untouched),
+- writes a systemd unit whose `ExecStart` is the installed `zlorb-service` binary and which pins `ZLORB_CONFIG_DIR` to the config directory resolved at setup time,
+- runs `systemctl daemon-reload` and `systemctl enable --now zlorb.service` (the `--user` variants for a normal user; run `setup` as root only if you deliberately want a system service), and for user services also tries to enable linger so the daemon starts at boot and keeps running after logout,
+- exits non-zero and prints the exact commands to finish by hand when registration does not complete.
+
+Use `zlorb-ctl setup --print-only` to write the config and unit files and print the unit and the `systemctl` commands without running them.
+
+The unit pins the config directory resolved when `setup` runs. If you change `ZLORB_CONFIG_DIR` or `XDG_CONFIG_HOME` afterwards, re-run `zlorb-ctl setup` so the daemon and `zlorb-ctl` keep reading the same directory. Run `zlorb-ctl start` / `watch` at the same scope you ran `setup` (both as your user, or both as root). The checked-in `zlorb.service` in this repo is only a fallback template for the default user layout; the unit `setup` generates is the one that counts.
+
+From a source checkout, the equivalent is `cargo install --path zlorb-ctl` and `cargo install --path zlorb-service`, followed by `zlorb-ctl setup` — or simply `just install`, which runs exactly those steps.
 
 ## ⚙️ Configuration
+
+`zlorb-ctl` and the daemon resolve the config directory the same way, in this order:
+
+1. `$ZLORB_CONFIG_DIR`, when set (the generated systemd unit sets it explicitly),
+2. `$XDG_CONFIG_HOME/zlorb`,
+3. `~/.config/zlorb`.
+
 ### Service Config
-> currently being refactored
+
+`<config dir>/service-config.toml` — created by the daemon with defaults on first run:
+
+```txt
+sleep_time = 5
+username = "NO USERNAME PROVIDED"
+token = "NO TOKEN PROVIDED"
+```
+
+`sleep_time` is the number of seconds the daemon waits between polling cycles. The daemon re-reads this file and `repositories.toml` every cycle, so edits take effect without a restart.
+
 ### Repositories Config
-*~/.config/zlorb/repositories.toml*
+
+`<config dir>/repositories.toml`:
+
 ```txt
 [[repository]]
 name = "SomeRepo"
-path = "/root/SomeRepo"
+path = "/home/you/SomeRepo"
 remote = "origin"
 branch = "master"
 build_command = "bun"
 ```
 
+Edit `build_command` (and `branch`/`remote` when they differ) after adding a repo; the daemon picks the change up on its next cycle.
+
 ## 🖱️ Usage
+
 Manage repositories with `zlorb-ctl` commands:
+
 ```bash
-# Add a repository
+# Add the current git repository
 zlorb-ctl add
 
 # List all configured repositories
 zlorb-ctl list
 
 # Remove a repository
-zlorb-ctl remove my-repo
+zlorb-ctl remove --repo-name my-repo
 ```
 
 ## 🚀 Deployment
-The `justfile` handles building and installing binaries to `/usr/local/bin/` and the systemd unit file to `/usr/lib/systemd/system/`. 
-The service runs in the foreground with automatic recovery on failure, ensuring reliable operation.
+
+The daemon is the systemd service registered by `zlorb-ctl setup`: a per-user service for normal installs, running in the foreground with automatic recovery on failure.
 
 ## 🌟 Getting Started
 
-1. Install zlorb as described above.
-1. Configure your repositories using `zlorb-ctl add`.
-1. Start the service with `sudo systemctl start zlorb`.
-1. Monitor build logs via `journalctl -u zlorb`.
+1. Install zlorb as described above and run `zlorb-ctl setup`.
+2. From inside a git repository, run `zlorb-ctl add`.
+3. Edit `build_command` for the repo in `<config dir>/repositories.toml`.
+4. Monitor build logs via `journalctl --user -u zlorb` (`journalctl -u zlorb` for a system service).
 
 zlorb will automatically keep your repositories updated and built, saving you time and effort.
 

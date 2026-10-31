@@ -1,5 +1,5 @@
 use std::process::{Command, ExitStatus};
-use zlorb_lib::{error::ZlorbError, log::Logger};
+use zlorb_lib::{error::ZlorbError, is_root, log::Logger};
 
 /// Responsible for starting/stopping/restarting the zlorb service daemon
 pub struct DaemonManager {}
@@ -15,9 +15,8 @@ impl DaemonManager {
     }
 
     fn run_process_check() -> Result<ExitStatus, ZlorbError> {
-        let is_root = std::env::var("UID").map(|u| u == "0").unwrap_or(false);
         let mut cmd = Command::new("systemctl");
-        if !is_root {
+        if !is_root() {
             cmd.arg("--user");
         }
         cmd.args(["is-active", "--quiet", "zlorb"])
@@ -28,7 +27,7 @@ impl DaemonManager {
     fn run_service_start_cmd() -> Result<ExitStatus, ZlorbError> {
         Logger::info("Starting the daemon".into());
         let mut cmd = Command::new("systemctl");
-        if std::env::var("UID").map(|u| u == "0").unwrap_or(false) == false {
+        if !is_root() {
             cmd.arg("--user");
         }
         let out = cmd.args(["start", "zlorb"])
@@ -41,7 +40,7 @@ impl DaemonManager {
     fn run_service_restart_cmd() -> Result<ExitStatus, ZlorbError> {
         Logger::info("Daemon already running, restarting it".into());
         let mut cmd = Command::new("systemctl");
-        if std::env::var("UID").map(|u| u == "0").unwrap_or(false) == false {
+        if !is_root() {
             cmd.arg("--user");
         }
         let out = cmd.args(["restart", "zlorb"])
