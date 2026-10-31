@@ -18,11 +18,13 @@ divergences.
 1. A repo entry in `repositories.toml` names its strategy explicitly in
    `build_strategy`. `RepositoryConfiguration::resolved_build_strategy()` in
    `zlorb-lib/src/config.rs` parses that string into a `BuildStrategyKind`.
-   Matching is exact, after trimming and lowercasing: there is no substring
-   detection, and an unknown or missing strategy is an `InvalidConfig` error
-   for that repo, never a guessed manager. The only fallback is the legacy
-   path for entries with no `build_strategy`, where a `build_command` of
-   exactly `"bun"`, `"cargo"`, or `"cargo build"` still selects a manager.
+   For an explicit `build_strategy` the match is exact, after trimming
+   and lowercasing: there is no substring detection, and an unknown
+   strategy is an `InvalidConfig` error for that repo, never a guessed
+   manager. A missing or blank `build_strategy` falls through to the
+   legacy path, where a `build_command` of exactly `"bun"`, `"cargo"`,
+   or `"cargo build"` still selects a manager; that legacy match is
+   exact and case-sensitive.
 2. `select_strategy()` in
    `zlorb-service/src/build_system_executor/mod.rs` maps each
    `BuildStrategyKind` to one `BuildStrategy` variant holding one manager.
@@ -36,7 +38,9 @@ divergences.
 
 `exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError>`
 receives the repo's full configuration. `config.path` is the repo working
-tree; `config.name` is the display name for log and error messages.
+tree every command runs in. `config.name` is the repo's configured name;
+the existing managers and the template do not read it in `exec`, and their
+build errors identify the failing step and runtime rather than the repo.
 
 A manager must:
 
@@ -116,12 +120,18 @@ copy them. Fixing them is separate work from adding a manager.
      `#[cfg(test)]` exists only in test builds and the daemon will never
      run it.
    - Add a `BuildStrategy` variant holding your manager in
-     `managers/manager.rs`.
-   - Add the matching arm in `select_strategy()` in
-     `build_system_executor/mod.rs`, and a selection test next to
-     `bun_strategy_selects_bun_manager`.
-4. Document the new value where users look for it: the `build_strategy`
-   paragraph in `README.md`, including any alias.
+     `managers/manager.rs`, and add your manager to the `use` block at
+     the top of that file.
+   - In `build_system_executor/mod.rs`: add your manager to the `use`
+     block at the top of the file, add the matching arm in
+     `select_strategy()`, add the matching arm in
+     `BuildSystemExecutor::run_build()`, and add a selection test next
+     to `bun_strategy_selects_bun_manager`. Both matches are exhaustive,
+     so the compiler stops you if an arm is missing — a build that
+     passes with the variant added has both arms in place.
+4. Document the new value in both places `README.md` lists strategies:
+   the `build_strategy` paragraph under Configuration and the Getting
+   Started step that names the valid values. Include any alias in both.
 5. Run the conformance checklist below against the finished manager, then
    `cargo build` and `cargo test`. Both must pass.
 
@@ -142,11 +152,16 @@ Verify each item by reading the manager or by a test, not by assumption:
 - [ ] Status checked: every command's exit status is checked, and a
       non-zero status becomes an error carrying the step name and stderr.
       A test with a failing stand-in command proves this (the template's
-      `run_step` tests are the pattern to copy).
+      `exec` tests, which drive a stand-in runtime that records its
+      working directory and fails with marked stderr, are the pattern to
+      copy — they also prove the install step runs before the build step
+      and that both run in the repo directory).
 - [ ] Errors, not panics: the `exec` path contains no `unwrap`, `expect`,
       or panic, and every failure returns a `ZlorbError` and is logged.
 - [ ] Build only: the manager contains no git operations, no config-file
       access, and no build-needed decision.
+- [ ] No shell strings: commands are spawned as a binary plus an argument
+      array, never through a shell.
 - [ ] Selection wired end to end: the strategy string resolves in
       `zlorb-lib`, `select_strategy()` returns the new variant, and tests
       cover both.

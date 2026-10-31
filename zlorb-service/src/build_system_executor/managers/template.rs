@@ -22,14 +22,22 @@ impl TemplateManager {
     fn build(&self, runtime: &Path, repo_path: &Path) -> Result<(), ZlorbError> {
         run_step(runtime, &["run", "build"], repo_path, "build")
     }
+
+    fn exec_with_search_path(
+        &self,
+        config: &RepositoryConfiguration,
+        search_path: Option<OsString>,
+    ) -> Result<(), ZlorbError> {
+        let runtime = self.find_runtime(search_path)?;
+        let repo_path = Path::new(&config.path);
+        self.install_dependencies(&runtime, repo_path)?;
+        self.build(&runtime, repo_path)
+    }
 }
 
 impl Manager for TemplateManager {
     fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
-        let runtime = self.find_runtime(std::env::var_os("PATH"))?;
-        let repo_path = Path::new(&config.path);
-        self.install_dependencies(&runtime, repo_path)?;
-        self.build(&runtime, repo_path)
+        self.exec_with_search_path(config, std::env::var_os("PATH"))
     }
 }
 
@@ -183,7 +191,7 @@ mod tests {
     fn run_step_errors_with_step_name_for_failing_command() {
         let dir = temp_dir("step-fail");
         let err = run_step(Path::new("/bin/false"), &[], &dir, "build").unwrap_err();
-        assert!(format!("{err:?}").contains("build") || format!("{err}").contains("build"));
+        assert!(format!("{err:?}").contains("Failed to build"));
     }
 
     #[test]
@@ -191,5 +199,79 @@ mod tests {
         let dir = temp_dir("step-missing");
         let missing = dir.join("no-such-runtime");
         assert!(run_step(&missing, &[], &dir, "build").is_err());
+    }
+
+    fn write_runtime(bin_dir: &Path, body: &str) {
+        let runtime = bin_dir.join("template-runtime");
+        std::fs::write(&runtime, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn repo_config(repo_dir: &Path) -> RepositoryConfiguration {
+        RepositoryConfiguration {
+            name: "demo".to_string(),
+            path: repo_dir.to_string_lossy().into_owned(),
+            remote: "origin".to_string(),
+            branch: "master".to_string(),
+            build_strategy: None,
+            build_command: "".to_string(),
+            out_dir: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_runs_install_then_build_in_the_repo_dir() {
+        let bin_dir = temp_dir("exec-bin");
+        let repo_dir = temp_dir("exec-repo");
+        write_runtime(
+            &bin_dir,
+            "#!/bin/sh\necho \"call:$@\" >> invocations.log\npwd >> invocations.log\n",
+        );
+        let manager = TemplateManager;
+        manager
+            .exec_with_search_path(
+                &repo_config(&repo_dir),
+                Some(bin_dir.into_os_string()),
+            )
+            .unwrap();
+        let log = std::fs::read_to_string(repo_dir.join("invocations.log")).unwrap();
+        let repo_canon = repo_dir.canonicalize().unwrap();
+        let repo_canon = repo_canon.to_string_lossy();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "call:install",
+                repo_canon.as_ref(),
+                "call:run build",
+                repo_canon.as_ref()
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_error_carries_the_failing_steps_stderr() {
+        let bin_dir = temp_dir("exec-fail-bin");
+        let repo_dir = temp_dir("exec-fail-repo");
+        write_runtime(
+            &bin_dir,
+            "#!/bin/sh\nif [ \"$1\" = \"run\" ]; then echo build-boom >&2; exit 3; fi\n",
+        );
+        let manager = TemplateManager;
+        let err = manager
+            .exec_with_search_path(
+                &repo_config(&repo_dir),
+                Some(bin_dir.into_os_string()),
+            )
+            .unwrap_err();
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Failed to build"));
+        assert!(debug.contains("build-boom"));
     }
 }
