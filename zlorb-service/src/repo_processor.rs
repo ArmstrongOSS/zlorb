@@ -41,6 +41,7 @@ impl RepoProcessor {
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
         Logger::info(format!("Updating from remote for {}", self.config.name));
+        self.config.resolved_build_strategy()?;
         let has_updates = self.fetch_remote_updates()?;
         Logger::info(format!("Remote updates found: {}", has_updates));
 
@@ -694,6 +695,74 @@ mod tests {
             "from remote\n"
         );
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn processor_with_strategy(watched: &Path, strategy: Option<&str>) -> RepoProcessor {
+        RepoProcessor::new(RepositoryConfiguration {
+            name: "watched".to_string(),
+            path: watched.to_string_lossy().into_owned(),
+            remote: "origin".to_string(),
+            branch: "master".to_string(),
+            build_strategy: strategy.map(|s| s.to_string()),
+            build_command: String::new(),
+            out_dir: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn invalid_strategy_refuses_update_until_config_is_fixed() {
+        let root = temp_dir("invalid-strategy");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        let err = processor_with_strategy(&watched_path, None)
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("no build_strategy"));
+        let err = processor_with_strategy(&watched_path, Some("webpack"))
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("webpack"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+        assert!(!fixture_artifact(&watched_path).exists());
+
+        processor_with_strategy(&watched_path, Some("rust"))
+            .update_from_remote()
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        let artifact = fixture_artifact(&watched_path);
+        let output = std::process::Command::new(&artifact).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("fixture-version-two")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
