@@ -111,7 +111,7 @@ The daemon is the systemd service registered by `zlorb-ctl setup`: a per-user se
 zlorb will automatically keep your repositories updated and built, saving you time and effort.
 
 ## 🤝 Contributing
-Want to contribute? Check the System Architecture and Workspace Structure for details. Pull requests and feedback are welcome!
+Want to contribute? Check the System Architecture and Workspace Structure for details. Pull requests and feedback are welcome! To add support for a new build toolchain, follow [Adding a build manager](https://github.com/ArmstrongOSS/zlorb/blob/dev/docs/build-managers.md): it covers the strategy pattern, the copyable manager template, and the conformance checklist a new manager must pass.
 
 ## Roadmap
 - [x] watch ctl flag that triggers journalctl log watcher
