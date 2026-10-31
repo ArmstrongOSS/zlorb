@@ -183,6 +183,7 @@ impl RepoProcessor {
 
     fn _checkout_and_get_ref(&self) -> Result<Reference<'_>, ZlorbError> {
         let mut checkout = git2::build::CheckoutBuilder::default();
+        checkout.force();
         self.repo
             .checkout_head(Some(&mut checkout))
             .map_err(ZlorbError::Git)?;
@@ -217,5 +218,162 @@ impl RepoProcessor {
             return Ok(true);
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::{IndexAddOption, RepositoryInitOptions, Signature};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "zlorb-repo-processor-test-{}-{}-{}",
+            std::process::id(),
+            label,
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_fixture_crate(repo_path: &Path, marker: &str) {
+        std::fs::create_dir_all(repo_path.join("src")).unwrap();
+        std::fs::write(
+            repo_path.join("Cargo.toml"),
+            "[package]\nname = \"fixture-app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo_path.join("src/main.rs"),
+            format!("fn main() {{ println!(\"{}\"); }}\n", marker),
+        )
+        .unwrap();
+    }
+
+    fn commit_all(repo: &git2::Repository, message: &str) -> Oid {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = Signature::now("zlorb-test", "zlorb-test@example.com").unwrap();
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid).unwrap());
+        match parent {
+            Some(parent) => repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+                .unwrap(),
+            None => repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+                .unwrap(),
+        }
+    }
+
+    fn head_oid(repo: &git2::Repository) -> Oid {
+        repo.head().unwrap().target().unwrap()
+    }
+
+    fn processor_for(watched: &Path) -> RepoProcessor {
+        RepoProcessor::new(RepositoryConfiguration {
+            name: "watched".to_string(),
+            path: watched.to_string_lossy().into_owned(),
+            remote: "origin".to_string(),
+            branch: "master".to_string(),
+            build_strategy: Some("rust".to_string()),
+            build_command: String::new(),
+            out_dir: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn fast_forward_updates_working_tree_and_build_output() {
+        let root = temp_dir("fast-forward");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        let watched = git2::Repository::clone(
+            upstream_path.to_string_lossy().as_ref(),
+            &watched_path,
+        )
+        .unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        assert!(!watched_path.join("target/debug/fixture-app").exists());
+        drop(watched);
+
+        let upstream = git2::Repository::open(&upstream_path).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        let source = std::fs::read_to_string(watched_path.join("src/main.rs")).unwrap();
+        assert!(source.contains("fixture-version-two"));
+        let statuses = watched.statuses(None).unwrap();
+        assert!(
+            statuses
+                .iter()
+                .all(|entry| entry.path() != Some("src/main.rs")),
+            "src/main.rs must be clean after the fast-forward, got: {:?}",
+            statuses
+                .iter()
+                .map(|entry| (entry.path().map(str::to_string), entry.status()))
+                .collect::<Vec<_>>()
+        );
+        let artifact = watched_path.join("target/debug/fixture-app");
+        assert!(artifact.exists());
+        let output = std::process::Command::new(&artifact).output().unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("fixture-version-two")
+        );
+    }
+
+    #[test]
+    fn up_to_date_repo_is_left_untouched() {
+        let root = temp_dir("up-to-date");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        processor_for(&watched_path).update_from_remote().unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("src/main.rs")).unwrap(),
+            "local edit\n"
+        );
     }
 }
