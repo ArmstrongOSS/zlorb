@@ -1,5 +1,5 @@
 mod utils;
-use crate::utils::{daemon::DaemonManager, repo};
+use crate::utils::{daemon::DaemonManager, repo, setup};
 use clap::{Parser, Subcommand};
 use zlorb_lib::error::ZlorbError;
 
@@ -23,6 +23,12 @@ enum Commands {
     List,
     /// starts the repo watch daemon
     Start,
+    /// sets up the daemon: config dir + systemd unit, then enables and starts it
+    Setup {
+        /// only write the config and unit files, and print the systemctl commands instead of running them
+        #[arg(long)]
+        print_only: bool,
+    },
     /// runs a journalctl watcher to see realtime logs
     Watch,
     /// runs the zlorb-web binary to start a web server;
@@ -39,6 +45,7 @@ fn main() -> Result<(), ZlorbError> {
         Commands::Add => repo::add(),
         Commands::List => repo::list(),
         Commands::Start => DaemonManager::start(),
+        Commands::Setup { print_only } => setup::setup(print_only),
         Commands::Remove { repo_name } => repo::remove(repo_name),
         Commands::Watch => repo::watch(),
         Commands::Web => {
@@ -49,6 +56,7 @@ fn main() -> Result<(), ZlorbError> {
 
     if let Err(e) = res {
         e.print();
+        std::process::exit(1);
     }
     Ok(())
 }
