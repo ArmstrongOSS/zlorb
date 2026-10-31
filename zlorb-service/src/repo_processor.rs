@@ -24,16 +24,19 @@ impl Debug for RepoProcessor {
 }
 
 impl RepoProcessor {
-    pub fn new(config: RepositoryConfiguration) -> Self {
+    pub fn new(config: RepositoryConfiguration) -> Result<Self, ZlorbError> {
         Logger::info(format!("Initializing RepoProcessor for {}", config.name));
-        let err = format!("Failed to acquire repo: {}", config.path);
-        let repo = git2::Repository::open(&config.path).expect(err.as_str());
-
-        Self {
+        let repo = git2::Repository::open(&config.path).map_err(|e| {
+            ZlorbError::Other(format!(
+                "Failed to acquire repo {} at {}: {}",
+                config.name, config.path, e
+            ))
+        })?;
+        Ok(Self {
             repo_path: PathBuf::from(&config.path),
             repo,
             config,
-        }
+        })
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
@@ -200,7 +203,13 @@ impl RepoProcessor {
         remote_ref: Reference,
         local_oid: Oid,
     ) -> Result<bool, ZlorbError> {
-        let remote_iod: Oid = remote_ref.target().expect("Remote ref has no target");
+        let remote_iod: Oid = remote_ref.target().ok_or_else(|| {
+            ZlorbError::Git(git2::Error::new(
+                git2::ErrorCode::NotFound,
+                git2::ErrorClass::None,
+                "Remote ref has no target",
+            ))
+        })?;
         let dist_dir_path = PathBuf::from(&self.config.path).join("dist");
         let dist_dir_exists = std::fs::exists(dist_dir_path).map_err(ZlorbError::Io)?;
         let local_iod_matches_remote = local_oid == remote_iod;
