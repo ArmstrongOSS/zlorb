@@ -125,9 +125,11 @@ copy them. Fixing them is separate work from adding a manager.
      to `bun_strategy_selects_bun_manager`. Both matches are exhaustive,
      so the compiler stops you if an arm is missing — a build that
      passes with the variant added has both arms in place.
-4. Document the new value in both places `README.md` lists strategies:
-   the `build_strategy` paragraph under Configuration and the Getting
-   Started step that names the valid values. Include any alias in both.
+4. Document the new value in every place `README.md` lists strategies
+   or shipped managers: the `build_strategy` paragraph under
+   Configuration, the Getting Started step that names the valid values,
+   and the Adding a build manager section, which names the shipped
+   managers. Include any alias in each place that names strategy values.
 5. Run the conformance checklist below against the finished manager, then
    `cargo build` and `cargo test`. Both must pass.
 
