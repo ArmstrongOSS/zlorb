@@ -32,6 +32,19 @@ pub fn tracker_key(raw_path: &str) -> String {
     }
 }
 
+fn stored_tracker_key(raw_path: &str, repo_name: &str) -> String {
+    match std::fs::canonicalize(raw_path) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(e) => {
+            Logger::error(format!(
+                "Could not canonicalize the path for {} ({}): {}; failed-build and failed-restart tracking will use the normalized path spelling, which may not match other spellings of the same repo",
+                repo_name, raw_path, e
+            ));
+            normalize_path_lexically(raw_path)
+        }
+    }
+}
+
 fn normalize_path_lexically(raw_path: &str) -> String {
     let path = Path::new(raw_path);
     let mut normalized = PathBuf::new();
@@ -39,8 +52,17 @@ fn normalize_path_lexically(raw_path: &str) -> String {
         match component {
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
-                if !normalized.pop() && !path.is_absolute() {
-                    normalized.push(component);
+                match normalized.components().last() {
+                    Some(std::path::Component::Normal(_)) => {
+                        normalized.pop();
+                    }
+                    Some(std::path::Component::ParentDir) => normalized.push(component),
+                    None => {
+                        if !path.is_absolute() {
+                            normalized.push(component);
+                        }
+                    }
+                    _ => {}
                 }
             }
             other => normalized.push(other),
@@ -101,6 +123,7 @@ pub struct RepoProcessor {
     pub config: RepositoryConfiguration,
     pub failed_builds: FailedBuilds,
     pub failed_restarts: FailedRestarts,
+    tracker_key: String,
 }
 
 impl Debug for RepoProcessor {
@@ -213,12 +236,14 @@ impl RepoProcessor {
                 config.name, config.path, e
             ))
         })?;
+        let tracker_key = stored_tracker_key(&config.path, &config.name);
         Ok(Self {
             repo_path: PathBuf::from(&config.path),
             repo,
             config,
             failed_builds: new_failed_builds(),
             failed_restarts: new_failed_restarts(),
+            tracker_key,
         })
     }
 
@@ -376,7 +401,7 @@ impl RepoProcessor {
     fn restart_failed_at(&self, oid: Oid) -> bool {
         tracker_failed_at(
             &self.failed_restarts,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             oid,
             "failed-restart",
             &self.config.name,
@@ -386,7 +411,7 @@ impl RepoProcessor {
     fn record_failed_restart(&self, oid: Oid) {
         tracker_record(
             &self.failed_restarts,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             oid,
             "failed-restart",
             &self.config.name,
@@ -396,7 +421,7 @@ impl RepoProcessor {
     fn clear_failed_restart(&self) {
         tracker_clear(
             &self.failed_restarts,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             "failed-restart",
             &self.config.name,
         );
@@ -405,7 +430,7 @@ impl RepoProcessor {
     fn build_failed_at(&self, oid: Oid) -> bool {
         tracker_failed_at(
             &self.failed_builds,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             oid,
             "failed-build",
             &self.config.name,
@@ -415,7 +440,7 @@ impl RepoProcessor {
     fn record_failed_build(&self, oid: Oid) {
         tracker_record(
             &self.failed_builds,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             oid,
             "failed-build",
             &self.config.name,
@@ -425,7 +450,7 @@ impl RepoProcessor {
     fn clear_failed_build(&self) {
         tracker_clear(
             &self.failed_builds,
-            &tracker_key(&self.config.path),
+            &self.tracker_key,
             "failed-build",
             &self.config.name,
         );
@@ -1408,6 +1433,11 @@ mod tests {
         assert_eq!(tracker_key("/nope/a/./b/../c"), "/nope/a/c");
         assert_eq!(tracker_key("a/./b/../c"), "a/c");
         assert_eq!(tracker_key("/../a"), "/a");
+        assert_eq!(normalize_path_lexically("../../a"), "../../a");
+        assert_eq!(normalize_path_lexically("../.."), "../..");
+        assert_eq!(normalize_path_lexically("x/../../../y"), "../../y");
+        assert_eq!(normalize_path_lexically("../a/../.."), "../..");
+        assert_eq!(normalize_path_lexically("a/../../b"), "../b");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1461,6 +1491,66 @@ mod tests {
         trailing.clear_failed_restart();
         assert!(!plain.build_failed_at(oid));
         assert!(!plain.restart_failed_at(oid));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_trackers_are_shared_across_a_symlinked_spelling() {
+        let root = temp_dir("tracker-symlink-processors");
+        let repo_path = root.join("repo");
+        git2::Repository::init(&repo_path).unwrap();
+        let link_path = root.join("link");
+        std::os::unix::fs::symlink(&repo_path, &link_path).unwrap();
+        let failed_builds = new_failed_builds();
+        let failed_restarts = new_failed_restarts();
+        let oid = Oid::from_str("3333333333333333333333333333333333333333").unwrap();
+
+        let via_link = processor_with_path_str(
+            link_path.to_string_lossy().into_owned(),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        via_link.record_failed_build(oid);
+        via_link.record_failed_restart(oid);
+
+        let via_real = processor_with_path_str(
+            repo_path.to_string_lossy().into_owned(),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        assert!(via_real.build_failed_at(oid));
+        assert!(via_real.restart_failed_at(oid));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracker_key_is_stored_at_construction_not_recomputed_per_operation() {
+        let root = temp_dir("tracker-stored-key");
+        let repo_path = root.join("repo");
+        git2::Repository::init(&repo_path).unwrap();
+        let link_path = root.join("link");
+        std::os::unix::fs::symlink(&repo_path, &link_path).unwrap();
+        let failed_builds = new_failed_builds();
+        let failed_restarts = new_failed_restarts();
+        let oid = Oid::from_str("4444444444444444444444444444444444444444").unwrap();
+
+        let processor = processor_with_path_str(
+            link_path.to_string_lossy().into_owned(),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        std::fs::remove_file(&link_path).unwrap();
+        processor.record_failed_build(oid);
+        assert_eq!(
+            failed_builds
+                .lock()
+                .unwrap()
+                .get(&tracker_key(&repo_path.to_string_lossy())),
+            Some(&oid),
+            "the record must land under the canonical key captured at construction, not a per-operation fallback spelling"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
