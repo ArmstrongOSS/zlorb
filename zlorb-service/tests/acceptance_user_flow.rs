@@ -1,6 +1,5 @@
 use git2::{IndexAddOption, Oid, RepositoryInitOptions, Signature};
 use std::io::Read;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -24,7 +23,6 @@ impl DaemonGuard {
 
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
-        #[cfg(unix)]
         {
             let _ = Command::new("kill")
                 .args(["-KILL", &format!("-{}", self.0.id())])
@@ -284,7 +282,6 @@ fn full_user_flow_add_edit_remote_update_and_build() {
         .env_remove("CARGO_TARGET_DIR")
         .stdout(Stdio::from(daemon_log))
         .stderr(Stdio::from(daemon_stderr));
-    #[cfg(unix)]
     daemon_cmd.process_group(0);
     let daemon = daemon_cmd.spawn().unwrap();
     let mut daemon_guard = DaemonGuard(daemon);

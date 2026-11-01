@@ -117,15 +117,9 @@ fn tracker_clear(tracker: &FailedBuilds, key: &str, label: &str, repo_name: &str
     }
 }
 
-#[cfg(unix)]
 fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     use std::os::unix::ffi::OsStringExt;
     PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
-}
-
-#[cfg(not(unix))]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 fn display_paths(paths: &[PathBuf]) -> String {
@@ -141,13 +135,10 @@ fn directory_is_tracked_typechange(
     workdir: &Path,
     prefix: &Path,
 ) -> bool {
-    #[cfg(unix)]
     let mut dir_prefix = {
         use std::os::unix::ffi::OsStrExt;
         prefix.as_os_str().as_bytes().to_vec()
     };
-    #[cfg(not(unix))]
-    let mut dir_prefix = prefix.to_string_lossy().into_owned().into_bytes();
     dir_prefix.push(b'/');
     if !head_paths.iter().any(|path| path.starts_with(&dir_prefix)) {
         return false;
@@ -172,15 +163,10 @@ fn directory_is_tracked_typechange(
             let Ok(relative) = entry_path.strip_prefix(workdir) else {
                 return false;
             };
-            #[cfg(unix)]
             let relative_bytes = {
                 use std::os::unix::ffi::OsStrExt;
                 relative.as_os_str().as_bytes()
             };
-            #[cfg(not(unix))]
-            let relative_owned = relative.to_string_lossy().into_owned().into_bytes();
-            #[cfg(not(unix))]
-            let relative_bytes = relative_owned.as_slice();
             if !head_paths.contains(relative_bytes) {
                 return false;
             }
@@ -285,14 +271,6 @@ fn run_restart_command(
     Ok(())
 }
 
-#[cfg(windows)]
-fn shell_command(command: &str) -> Command {
-    let mut shell = Command::new("cmd");
-    shell.args(["/C", command]);
-    shell
-}
-
-#[cfg(not(windows))]
 fn shell_command(command: &str) -> Command {
     let mut shell = Command::new("/bin/sh");
     shell.args(["-c", command]);
@@ -651,16 +629,11 @@ impl RepoProcessor {
                         ) {
                             let path =
                                 PathBuf::from(root).join(entry.name().unwrap_or_default());
-                            #[cfg(unix)]
                             {
                                 use std::os::unix::ffi::OsStrExt;
                                 head_paths
                                     .insert(path.as_os_str().as_bytes().to_vec());
                             }
-                            #[cfg(not(unix))]
-                            head_paths.insert(
-                                path.to_string_lossy().into_owned().into_bytes(),
-                            );
                         }
                         git2::TreeWalkResult::Ok
                     });
@@ -945,14 +918,9 @@ impl RepoProcessor {
                 let Ok(target) = std::fs::read_link(&full_path) else {
                     continue;
                 };
-                #[cfg(unix)]
                 {
                     use std::os::unix::ffi::OsStrExt;
                     target.as_os_str().as_bytes().to_vec()
-                }
-                #[cfg(not(unix))]
-                {
-                    target.to_string_lossy().into_owned().into_bytes()
                 }
             } else if file_type.is_file() {
                 let Ok(contents) = std::fs::read(&full_path) else {
@@ -1176,11 +1144,7 @@ mod tests {
     }
 
     fn fixture_artifact(watched: &Path) -> PathBuf {
-        let name = if cfg!(windows) {
-            "fixture-app.exe"
-        } else {
-            "fixture-app"
-        };
+        let name = "fixture-app";
         match std::env::var_os("CARGO_TARGET_DIR") {
             Some(dir) if Path::new(&dir).is_absolute() => {
                 PathBuf::from(dir).join("debug").join(name)
@@ -1495,7 +1459,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     fn commit_all_no_delete(repo: &git2::Repository, message: &str) -> Oid {
         let mut index = repo.index().unwrap();
         index
@@ -1520,7 +1483,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn non_utf8_filename_in_the_update_still_refuses_when_dirty() {
         use std::os::unix::ffi::OsStringExt;
@@ -1974,7 +1936,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn rollback_cleanup_removes_matching_symlink_and_skips_fifo() {
         let root = temp_dir("rollback-cleanup-types");
@@ -2500,7 +2461,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn tracker_key_resolves_symlinks_to_the_same_repo() {
         let root = temp_dir("tracker-key-symlink");
@@ -2553,7 +2513,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn failed_trackers_are_shared_across_a_symlinked_spelling() {
         let root = temp_dir("tracker-symlink-processors");
@@ -2583,7 +2542,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    #[cfg(unix)]
     #[test]
     fn tracker_key_is_stored_at_construction_not_recomputed_per_operation() {
         let root = temp_dir("tracker-stored-key");
@@ -2670,7 +2628,6 @@ mod tests {
         )
     }
 
-    #[cfg(unix)]
     #[test]
     fn restart_command_succeeds_and_fails_with_its_stderr() {
         let dir = temp_dir("restart-unit");
@@ -2689,7 +2646,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn restart_command_is_not_blocked_by_a_backgrounded_process() {
         let dir = temp_dir("restart-background");
