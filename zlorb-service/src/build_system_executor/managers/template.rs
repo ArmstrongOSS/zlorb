@@ -201,14 +201,11 @@ mod tests {
         assert!(run_step(&missing, &[], &dir, "build").is_err());
     }
 
-    fn write_runtime(bin_dir: &Path, body: &str) {
-        let runtime = bin_dir.join("template-runtime");
-        std::fs::write(&runtime, body).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+    #[cfg(unix)]
+    fn write_runtime(bin_dir: &Path, repo_dir: &Path, install_body: &str, run_body: &str) {
+        std::os::unix::fs::symlink("/bin/sh", bin_dir.join("template-runtime")).unwrap();
+        std::fs::write(repo_dir.join("install"), install_body).unwrap();
+        std::fs::write(repo_dir.join("run"), run_body).unwrap();
     }
 
     fn repo_config(repo_dir: &Path) -> RepositoryConfiguration {
@@ -231,7 +228,9 @@ mod tests {
         let repo_dir = temp_dir("exec-repo");
         write_runtime(
             &bin_dir,
-            "#!/bin/sh\necho \"call:$@\" >> invocations.log\npwd >> invocations.log\n",
+            &repo_dir,
+            "echo \"call:install\" >> invocations.log\npwd >> invocations.log\n",
+            "echo \"call:run $1\" >> invocations.log\npwd >> invocations.log\n",
         );
         let manager = TemplateManager;
         manager
@@ -262,7 +261,9 @@ mod tests {
         let repo_dir = temp_dir("exec-fail-repo");
         write_runtime(
             &bin_dir,
-            "#!/bin/sh\nif [ \"$1\" = \"run\" ]; then echo build-boom >&2; exit 3; fi\n",
+            &repo_dir,
+            "",
+            "echo build-boom >&2\nexit 3\n",
         );
         let manager = TemplateManager;
         let err = manager
