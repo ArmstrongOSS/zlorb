@@ -83,11 +83,9 @@ copy them. Fixing them is separate work from adding a manager.
   does error on any non-success status. Its install step canonicalizes
   the repo path while its build step uses `config.path` as given.
 - `RustManager` has no runtime discovery and no install step: it spawns
-  the bare name `cargo` (resolved through `PATH` by the operating system)
-  on a spawned thread, and it discards the command's `Output`, so it
-  never checks the exit status or stderr and returns success whenever the
-  spawn itself succeeds. It also does not log failures with `Logger`. A
-  failed `cargo build` is therefore invisible to it today.
+  the bare name `cargo` (resolved through `PATH` by the operating system).
+  Its build step does check the exit status, logs failures with
+  `Logger`, and returns an error carrying the command's stderr.
 
 ## Adding a manager, step by step
 
