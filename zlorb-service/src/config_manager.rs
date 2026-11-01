@@ -219,16 +219,27 @@ mod tests {
         .unwrap();
         let manager = ConfigManager::with_config_dir(config_dir.clone());
         assert_eq!(manager.load_service_config().unwrap().sleep_time, 42);
-        let edited = repo_entry("repo", &repo_path).replace("cargo build", "cargo build --release");
+        let before = manager.load_all_repo_configs().unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].config.build_command, "cargo build");
+        assert_eq!(before[0].config.build_strategy, None);
+        let edited = repo_entry("repo", &repo_path).replace(
+            "build_command = \"cargo build\"",
+            "build_strategy = \"rust\"\nbuild_command = \"cargo build --release\"",
+        );
         write_repos(&config_dir, &edited);
         std::fs::write(
             config_dir.join("service-config.toml"),
             "sleep_time = 7\nusername = \"u\"\ntoken = \"t\"\n",
         )
         .unwrap();
+        let reloaded = manager.load_all_repo_configs().unwrap();
+        assert_eq!(reloaded.len(), 1);
+        assert_eq!(reloaded[0].config.build_command, "cargo build --release");
+        assert_eq!(reloaded[0].config.build_strategy.as_deref(), Some("rust"));
         assert_eq!(
-            manager.load_all_repo_configs().unwrap()[0].config.build_command,
-            "cargo build --release"
+            reloaded[0].config.resolved_build_strategy().unwrap(),
+            zlorb_lib::config::BuildStrategyKind::Rust
         );
         assert_eq!(manager.load_service_config().unwrap().sleep_time, 7);
     }
@@ -239,10 +250,18 @@ mod tests {
         let config_dir = root.join("config");
         let good = root.join("good");
         init_repo(&good);
-        let bad_entry = "[[repository]]\nname = \"bad\"\npath = \"/tmp\"\nremote = \"origin\"\nbranch = \"master\"\n".to_string();
+        let bad = root.join("bad");
+        init_repo(&bad);
+        let bad_entry = format!(
+            "[[repository]]\nname = \"bad\"\npath = \"{}\"\nremote = \"origin\"\nbuild_command = \"cargo build\"\n",
+            bad.display()
+        );
         let contents = format!("{}{}", repo_entry("good", &good), bad_entry);
         write_repos(&config_dir, &contents);
         let manager = ConfigManager::with_config_dir(config_dir);
+        let parsed = manager.load_repo_configurations().unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "good");
         let repos = manager.load_all_repo_configs().unwrap();
         assert_eq!(repos.len(), 1);
         assert_eq!(repos[0].config.name, "good");

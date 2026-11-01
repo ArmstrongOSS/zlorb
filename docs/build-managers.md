@@ -22,9 +22,9 @@ divergences.
    and lowercasing: there is no substring detection, and an unknown
    strategy is an `InvalidConfig` error for that repo, never a guessed
    manager. A missing or blank `build_strategy` falls through to the
-   legacy path, where a `build_command` of exactly `"bun"`, `"cargo"`,
-   or `"cargo build"` still selects a manager; that legacy match is
-   exact and case-sensitive.
+   legacy path, where a `build_command` of `"bun"`, `"cargo"`,
+   or `"cargo build"` still selects a manager; that legacy match uses
+   the same rule: exact, after trimming and lowercasing.
 2. `select_strategy()` in
    `zlorb-service/src/build_system_executor/mod.rs` maps each
    `BuildStrategyKind` to one `BuildStrategy` variant holding one manager.
