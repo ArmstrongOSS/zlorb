@@ -9,7 +9,6 @@ pub struct BunManager;
 impl BunManager {
     fn check_bun_installed(&self) -> Result<PathBuf, ZlorbError> {
         let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-        let bun_exists: bool;
         let user_prefix: PathBuf;
         if user == "root" {
             user_prefix = PathBuf::from("/root/");
@@ -17,14 +16,7 @@ impl BunManager {
             user_prefix = PathBuf::from("/home").join(user.clone());
         }
         let bun_path = user_prefix.join(".bun/bin/bun");
-        bun_exists = bun_path.try_exists().map_err(ZlorbError::Io)?;
-
-        if !bun_exists {
-            let err = format!("Bun is not installed or not in the PATH for user: {}", user);
-            Logger::error(err.clone());
-            return Err(ZlorbError::Other(err));
-        }
-
+        ensure_bun_at(&bun_path, &user)?;
         Ok(bun_path)
     }
 
@@ -52,6 +44,16 @@ impl Manager for BunManager {
         let bun_path = self.check_bun_installed()?;
         self.exec_with_bun_path(config, &bun_path)
     }
+}
+
+fn ensure_bun_at(bun_path: &Path, user: &str) -> Result<(), ZlorbError> {
+    let bun_exists = bun_path.try_exists().map_err(ZlorbError::Io)?;
+    if !bun_exists {
+        let err = format!("Bun is not installed or not in the PATH for user: {}", user);
+        Logger::error(err.clone());
+        return Err(ZlorbError::Other(err));
+    }
+    Ok(())
 }
 
 fn run_bun_step(
@@ -170,6 +172,23 @@ mod tests {
         let debug = format!("{err:?}");
         assert!(debug.contains("Failed to install dependencies"));
         assert!(debug.contains("install-boom"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_errors_for_missing_bun_at_the_checked_path() {
+        let dir = temp_dir("ensure-missing");
+        let err = ensure_bun_at(&dir.join("bun"), "demo").unwrap_err();
+        assert!(format!("{err:?}").contains("Bun is not installed"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discovery_accepts_bun_present_at_the_checked_path() {
+        let dir = temp_dir("ensure-present");
+        let present = dir.join("bun");
+        std::fs::write(&present, "").unwrap();
+        assert!(ensure_bun_at(&present, "demo").is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -20,6 +20,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 struct Step {
     script: &'static str,
     label: &'static str,
+    fail_fragment: &'static str,
 }
 
 struct ConformanceCase {
@@ -50,10 +51,12 @@ fn bun_case() -> ConformanceCase {
             Step {
                 script: "install",
                 label: "install",
+                fail_fragment: "Failed to install dependencies",
             },
             Step {
                 script: "run",
                 label: "run build",
+                fail_fragment: "Failed to build",
             },
         ],
         run: run_bun,
@@ -67,6 +70,7 @@ fn rust_case() -> ConformanceCase {
         steps: &[Step {
             script: "build",
             label: "build",
+            fail_fragment: "Failed to build",
         }],
         run: run_rust,
     }
@@ -80,10 +84,12 @@ fn template_case() -> ConformanceCase {
             Step {
                 script: "install",
                 label: "install",
+                fail_fragment: "Failed to install dependencies",
             },
             Step {
                 script: "run",
                 label: "run build",
+                fail_fragment: "Failed to build",
             },
         ],
         run: run_template,
@@ -104,12 +110,30 @@ fn case_for_strategy(strategy: &BuildStrategy) -> ConformanceCase {
     }
 }
 
+fn next_kind(kind: BuildStrategyKind) -> Option<BuildStrategyKind> {
+    match kind {
+        BuildStrategyKind::Bun => Some(BuildStrategyKind::Rust),
+        BuildStrategyKind::Rust => None,
+    }
+}
+
+fn registered_kinds() -> Vec<BuildStrategyKind> {
+    let mut kinds = Vec::new();
+    let mut current = Some(BuildStrategyKind::Bun);
+    while let Some(kind) = current {
+        kinds.push(kind);
+        current = next_kind(kind);
+    }
+    kinds
+}
+
 fn registered_cases() -> Vec<ConformanceCase> {
-    vec![
-        case_for_kind(BuildStrategyKind::Bun),
-        case_for_kind(BuildStrategyKind::Rust),
-        template_case(),
-    ]
+    let mut cases: Vec<ConformanceCase> = registered_kinds()
+        .iter()
+        .map(|kind| case_for_kind(*kind))
+        .collect();
+    cases.push(template_case());
+    cases
 }
 
 fn strategy_name(kind: BuildStrategyKind) -> &'static str {
@@ -135,6 +159,7 @@ fn fixture(case_name: &str, label: &str) -> Fixture {
     ));
     let bin_dir = root.join("bin");
     let repo_dir = root.join("repo");
+    let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&bin_dir).unwrap();
     std::fs::create_dir_all(&repo_dir).unwrap();
     Fixture { bin_dir, repo_dir }
@@ -150,15 +175,14 @@ impl Fixture {
     }
 }
 
-fn write_stand_in(fixture: &Fixture, case: &ConformanceCase, fail_build: bool) -> PathBuf {
+fn write_stand_in(fixture: &Fixture, case: &ConformanceCase, fail_at: Option<usize>) -> PathBuf {
     std::os::unix::fs::symlink("/bin/sh", fixture.bin_dir.join(case.runtime_name)).unwrap();
-    let last = case.steps.len() - 1;
     for (index, step) in case.steps.iter().enumerate() {
         let mut body = format!(
             "echo \"call:{}\" >> invocations.log\npwd >> invocations.log\necho conformance-warning >&2\n",
             step.label
         );
-        if fail_build && index == last {
+        if fail_at == Some(index) {
             body.push_str("echo conformance-boom >&2\nexit 3\n");
         }
         std::fs::write(fixture.repo_dir.join(step.script), body).unwrap();
@@ -181,7 +205,7 @@ fn repo_config(repo_dir: &Path) -> RepositoryConfiguration {
 
 #[test]
 fn registered_strategies_resolve_to_their_conformance_cases() {
-    for kind in [BuildStrategyKind::Bun, BuildStrategyKind::Rust] {
+    for kind in registered_kinds() {
         let mut config = repo_config(Path::new("/tmp/demo"));
         config.build_strategy = Some(strategy_name(kind).to_string());
         let strategy = select_strategy(&config).unwrap();
@@ -193,7 +217,7 @@ fn registered_strategies_resolve_to_their_conformance_cases() {
 fn conformance_success_runs_steps_in_order_in_the_repo_dir() {
     for case in registered_cases() {
         let fixture = fixture(case.name, "ok");
-        let runtime = write_stand_in(&fixture, &case, false);
+        let runtime = write_stand_in(&fixture, &case, None);
         let result = (case.run)(&repo_config(&fixture.repo_dir), &runtime);
         assert!(result.is_ok(), "{}: exec failed: {:?}", case.name, result);
         let log = std::fs::read_to_string(fixture.repo_dir.join("invocations.log")).unwrap();
@@ -219,25 +243,30 @@ fn conformance_success_runs_steps_in_order_in_the_repo_dir() {
 }
 
 #[test]
-fn conformance_build_failure_carries_step_name_and_stderr() {
+fn conformance_step_failure_carries_step_name_and_stderr() {
     for case in registered_cases() {
-        let fixture = fixture(case.name, "fail");
-        let runtime = write_stand_in(&fixture, &case, true);
-        let err = (case.run)(&repo_config(&fixture.repo_dir), &runtime).unwrap_err();
-        let debug = format!("{err:?}");
-        assert!(
-            debug.contains("Failed to build"),
-            "{}: error does not name the build step: {}",
-            case.name,
-            debug
-        );
-        assert!(
-            debug.contains("conformance-boom"),
-            "{}: error does not carry the command stderr: {}",
-            case.name,
-            debug
-        );
-        fixture.cleanup();
+        for fail_index in 0..case.steps.len() {
+            let label = format!("fail{fail_index}");
+            let fixture = fixture(case.name, &label);
+            let runtime = write_stand_in(&fixture, &case, Some(fail_index));
+            let err = (case.run)(&repo_config(&fixture.repo_dir), &runtime).unwrap_err();
+            let debug = format!("{err:?}");
+            let step = &case.steps[fail_index];
+            assert!(
+                debug.contains(step.fail_fragment),
+                "{}: error does not name the failing step {}: {}",
+                case.name,
+                step.label,
+                debug
+            );
+            assert!(
+                debug.contains("conformance-boom"),
+                "{}: error does not carry the command stderr: {}",
+                case.name,
+                debug
+            );
+            fixture.cleanup();
+        }
     }
 }
 

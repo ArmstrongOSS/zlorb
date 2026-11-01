@@ -130,11 +130,15 @@ copy them. Fixing them is separate work from adding a manager.
      add a case for it (a stand-in runtime name, its step scripts in
      order, and a `run` function that drives its `exec` against a
      stand-in binary, following the template manager's
-     `exec_with_search_path` pattern for the test seam) and add its
+     `exec_with_search_path` pattern for the test seam), add its
      arms to the exhaustive matches over `BuildStrategyKind` and
-     `BuildStrategy` in that file. Those matches have no wildcard arm,
-     so adding a strategy variant without wiring its case breaks the
-     test build — the suite cannot be silently skipped.
+     `BuildStrategy` in that file, and link its kind into the
+     `next_kind` chain in that file. Every conformance test derives
+     the managers it exercises from that one chain, so a kind the
+     chain does not reach is never exercised. The matches have no
+     wildcard arm, so a strategy variant with no case arms breaks
+     the test build; the chain is the step that makes the finished
+     case run.
 4. Document the new value in every place `README.md` lists strategies
    or shipped managers: the `build_strategy` paragraph under
    Configuration, the Getting Started step that names the valid values,
@@ -148,13 +152,21 @@ copy them. Fixing them is separate work from adding a manager.
 The shared conformance suite in
 `zlorb-service/src/build_system_executor/managers/conformance.rs` is the
 enforcing gate for the exec-level items on this list. It drives every
-registered manager — Bun, Rust, and the template manager — through one
-set of checks with hermetic stand-in binaries: the manager's steps run
-in order in the repo directory, a command that writes to stderr but
-exits zero still succeeds, a failing build step returns an error naming
-the step and carrying the command's stderr, and a missing runtime
-returns an error instead of panicking. The remaining items are verified
-by reading the manager, not by assumption:
+manager reached by its `next_kind` chain — Bun, Rust, and the template
+manager — through one set of checks with hermetic stand-in binaries:
+the manager's steps run in order in the repo directory, a command that
+writes to stderr but exits zero still succeeds, failing each step in
+turn returns an error naming that step and carrying the command's
+stderr, and a missing runtime returns an error instead of panicking.
+One boundary: the suite models a manager's steps as shell scripts named
+by the first word of each command (`install`, `run`, `build`), so a
+manager whose commands do not start with a script-name word needs its
+case's step model extended before it can be wired in. For Bun, whose
+runtime discovery checks a fixed per-user path rather than a
+caller-supplied one, the discovery error itself is covered by the unit
+tests in `bun.rs`; the suite covers spawning a missing runtime path for
+it. The remaining items are verified by reading the manager, not by
+assumption:
 
 - [ ] Runtime discovery: the manager locates its runtime itself and
       returns a `ZlorbError` naming the runtime when it is absent. A
@@ -169,10 +181,9 @@ by reading the manager, not by assumption:
 - [ ] Status checked: every command's exit status is checked, and a
       non-zero status becomes an error carrying the step name and stderr.
       The shared conformance suite proves this for the finished manager
-      with a failing stand-in command that records its working directory
-      and fails with marked stderr; its success case also proves the
-      install step runs before the build step and that both run in the
-      repo directory.
+      by failing each of its steps in turn with a stand-in command that
+      fails with marked stderr; its success case proves the steps run in
+      order and that every step runs in the repo directory.
 - [ ] Errors, not panics: the `exec` path contains no `unwrap`, `expect`,
       or panic, and every failure returns a `ZlorbError` and is logged.
 - [ ] Build only: the manager contains no git operations, no config-file
@@ -183,10 +194,13 @@ by reading the manager, not by assumption:
       `zlorb-lib`, `select_strategy()` returns the new variant, and tests
       cover both.
 - [ ] Conformance gate: the manager has a case in the shared conformance
-      suite (`managers/conformance.rs`) and the suite passes for it. The
-      suite's exhaustive matches over `BuildStrategyKind` and
-      `BuildStrategy` fail the test build for a variant with no case, so
-      a passing `cargo test` is the proof this item holds.
+      suite (`managers/conformance.rs`), its kind is linked into the
+      suite's `next_kind` chain, and the suite passes for it. The suite's
+      exhaustive matches over `BuildStrategyKind` and `BuildStrategy`
+      fail the test build for a variant with no case arms, and every
+      conformance test exercises exactly the kinds the chain reaches, so
+      a passing `cargo test` with the chain linked is the proof this
+      item holds.
 - [ ] No new manager shipped unused: the strategy exists because a real
       project is being watched with it.
 
