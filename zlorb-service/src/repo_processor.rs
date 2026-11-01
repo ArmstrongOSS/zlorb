@@ -5,7 +5,8 @@ use git2::{
 use std::{
     collections::HashMap,
     fmt::Debug,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
 };
 use zlorb_lib::{config::RepositoryConfiguration, error::ZlorbError, log::Logger};
@@ -18,11 +19,18 @@ pub fn new_failed_builds() -> FailedBuilds {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+pub type FailedRestarts = Arc<Mutex<HashMap<String, Oid>>>;
+
+pub fn new_failed_restarts() -> FailedRestarts {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
     pub config: RepositoryConfiguration,
     pub failed_builds: FailedBuilds,
+    pub failed_restarts: FailedRestarts,
 }
 
 impl Debug for RepoProcessor {
@@ -33,6 +41,97 @@ impl Debug for RepoProcessor {
             .field("config", &self.config)
             .finish()
     }
+}
+
+fn run_restart_command(
+    command: &str,
+    repo_path: &Path,
+    repo_name: &str,
+) -> Result<(), ZlorbError> {
+    Logger::info(format!(
+        "Running restart command for {}: {}",
+        repo_name, command
+    ));
+    let capture_path = std::env::temp_dir().join(format!(
+        "zlorb-restart-output-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let capture = std::fs::File::create(&capture_path).map_err(|e| {
+        let err = format!(
+            "Failed to run restart command for {}: could not create the output capture file: {}",
+            repo_name, e
+        );
+        Logger::error(err.clone());
+        ZlorbError::Other(err)
+    })?;
+    let capture_err = capture.try_clone().map_err(|e| {
+        let err = format!(
+            "Failed to run restart command for {}: could not clone the output capture file: {}",
+            repo_name, e
+        );
+        Logger::error(err.clone());
+        ZlorbError::Other(err)
+    })?;
+    let mut shell = shell_command(command);
+    let mut child = shell
+        .current_dir(repo_path)
+        .stdout(Stdio::from(capture))
+        .stderr(Stdio::from(capture_err))
+        .spawn()
+        .map_err(|e| {
+            let err = format!(
+                "Failed to run restart command for {}: {}",
+                repo_name, e
+            );
+            Logger::error(err.clone());
+            ZlorbError::Other(err)
+        })?;
+    let status = child.wait().map_err(|e| {
+        let err = format!(
+            "Failed to run restart command for {}: {}",
+            repo_name, e
+        );
+        Logger::error(err.clone());
+        ZlorbError::Other(err)
+    })?;
+    let output = std::fs::read_to_string(&capture_path).unwrap_or_default();
+    let _ = std::fs::remove_file(&capture_path);
+    if !output.trim().is_empty() {
+        Logger::info(format!(
+            "Restart command for {} output: {}",
+            repo_name,
+            output.trim()
+        ));
+    }
+    if !status.success() {
+        let err = format!(
+            "Restart command for {} exited with status {}: {}",
+            repo_name,
+            status,
+            output.trim()
+        );
+        Logger::error(err.clone());
+        return Err(ZlorbError::Other(err));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn shell_command(command: &str) -> Command {
+    let mut shell = Command::new("cmd");
+    shell.args(["/C", command]);
+    shell
+}
+
+#[cfg(not(windows))]
+fn shell_command(command: &str) -> Command {
+    let mut shell = Command::new("/bin/sh");
+    shell.args(["-c", command]);
+    shell
 }
 
 impl RepoProcessor {
@@ -49,12 +148,14 @@ impl RepoProcessor {
             repo,
             config,
             failed_builds: new_failed_builds(),
+            failed_restarts: new_failed_restarts(),
         })
     }
 
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
         Logger::info(format!("Updating from remote for {}", self.config.name));
         self.config.resolved_build_strategy()?;
+        let head_before = self.repo.head().ok().and_then(|head| head.target());
         let has_updates = self.fetch_remote_updates()?;
         Logger::info(format!("Remote updates found: {}", has_updates));
 
@@ -87,7 +188,7 @@ impl RepoProcessor {
             }
         }
 
-        match should_run_build {
+        let build_outcome = match should_run_build {
             true => {
                 Logger::info(format!(
                     "Found updates or missing output dir for {}. Pulling changes...",
@@ -113,6 +214,77 @@ impl RepoProcessor {
                 Logger::info(format!("No build needed for {}", self.config.name));
                 Ok(())
             }
+        };
+        build_outcome.and_then(|_| {
+            self.run_restart_if_needed(head_before, retrying_failed_build, should_run_build)
+        })
+    }
+
+    fn run_restart_if_needed(
+        &self,
+        head_before: Option<Oid>,
+        retrying_failed_build: bool,
+        build_ran_this_cycle: bool,
+    ) -> Result<(), ZlorbError> {
+        let Some(command) = self.config.resolved_restart_command() else {
+            return Ok(());
+        };
+        let current_oid = self.repo.head().ok().and_then(|head| head.target());
+        let head_changed = current_oid.is_some() && current_oid != head_before;
+        let retrying_failed_restart = current_oid
+            .map(|oid| self.restart_failed_at(oid))
+            .unwrap_or(false);
+        if retrying_failed_restart && !head_changed {
+            Logger::error(format!(
+                "Retrying the failed restart command for {} at {}: the previous restart for this commit did not succeed",
+                self.config.name,
+                current_oid.map(|oid| oid.to_string()).unwrap_or_default()
+            ));
+        }
+        let needed = head_changed || retrying_failed_restart || retrying_failed_build;
+        if !needed {
+            return Ok(());
+        }
+        if !build_ran_this_cycle {
+            let tracked_changes = self._tracked_local_changes()?;
+            if !tracked_changes.is_empty() {
+                return Err(ZlorbError::Other(format!(
+                    "Refusing to run the restart command for {}: local changes to tracked files ({}) are not part of the commit being restarted on. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
+                    self.config.name,
+                    tracked_changes.join(", ")
+                )));
+            }
+        }
+        match run_restart_command(command, &self.repo_path, &self.config.name) {
+            Ok(()) => {
+                self.clear_failed_restart();
+                Ok(())
+            }
+            Err(e) => {
+                if let Some(oid) = current_oid {
+                    self.record_failed_restart(oid);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn restart_failed_at(&self, oid: Oid) -> bool {
+        match self.failed_restarts.lock() {
+            Ok(failed) => failed.get(&self.config.path) == Some(&oid),
+            Err(_) => false,
+        }
+    }
+
+    fn record_failed_restart(&self, oid: Oid) {
+        if let Ok(mut failed) = self.failed_restarts.lock() {
+            failed.insert(self.config.path.clone(), oid);
+        }
+    }
+
+    fn clear_failed_restart(&self) {
+        if let Ok(mut failed) = self.failed_restarts.lock() {
+            failed.remove(&self.config.path);
         }
     }
 
@@ -571,6 +743,7 @@ mod tests {
             branch: "master".to_string(),
             build_strategy: Some("rust".to_string()),
             build_command: String::new(),
+            restart_command: None,
             out_dir: None,
         })
         .unwrap()
@@ -789,6 +962,7 @@ mod tests {
             branch: "master".to_string(),
             build_strategy: strategy.map(|s| s.to_string()),
             build_command: String::new(),
+            restart_command: None,
             out_dir: None,
         })
         .unwrap()
@@ -1069,6 +1243,295 @@ mod tests {
         let output = std::process::Command::new(&artifact).output().unwrap();
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("fixture-version-three")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn processor_with_restart(
+        watched: &Path,
+        restart_command: Option<String>,
+        failed_restarts: FailedRestarts,
+    ) -> RepoProcessor {
+        let mut processor = processor_for(watched);
+        processor.config.restart_command = restart_command;
+        processor.failed_restarts = failed_restarts;
+        processor
+    }
+
+    fn serve_command(watched: &Path) -> String {
+        format!(
+            "\"{}\" > served.txt",
+            fixture_artifact(watched).display()
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_command_succeeds_and_fails_with_its_stderr() {
+        let dir = temp_dir("restart-unit");
+        assert!(run_restart_command("true", &dir, "demo").is_ok());
+        std::fs::write(dir.join("marker.txt"), "x").unwrap();
+        assert!(run_restart_command("test -f marker.txt", &dir, "demo").is_ok());
+        let err = run_restart_command("echo restart-boom >&2; exit 3", &dir, "demo")
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("Restart command for demo"));
+        assert!(format!("{:?}", err).contains("restart-boom"));
+        run_restart_command("echo ran > restart-ran.txt", &dir, "demo").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("restart-ran.txt")).unwrap(),
+            "ran\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_command_is_not_blocked_by_a_backgrounded_process() {
+        let dir = temp_dir("restart-background");
+        let started = std::time::Instant::now();
+        run_restart_command("sleep 20 & echo started", &dir, "demo").unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "restart command blocked on a backgrounded process for {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_runs_after_an_update_and_not_when_nothing_changes() {
+        let root = temp_dir("restart-after-update");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+
+        let failed_restarts = new_failed_restarts();
+        let command = serve_command(&watched_path);
+        processor_with_restart(
+            &watched_path,
+            Some(command.clone()),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert!(!watched_path.join("served.txt").exists());
+
+        let upstream = git2::Repository::open(&upstream_path).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        processor_with_restart(
+            &watched_path,
+            Some(command.clone()),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("served.txt")).unwrap(),
+            "fixture-version-two\n"
+        );
+
+        std::fs::remove_file(watched_path.join("served.txt")).unwrap();
+        processor_with_restart(
+            &watched_path,
+            Some(command),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap();
+        assert!(!watched_path.join("served.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_restart_is_reported_and_retried_until_it_succeeds() {
+        let root = temp_dir("restart-retry");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(
+            watched
+                .revparse_single("HEAD~1")
+                .unwrap()
+                .id(),
+        )
+        .unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        let failed_restarts = new_failed_restarts();
+        let err = processor_with_restart(
+            &watched_path,
+            Some("false".to_string()),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap_err();
+        assert!(format!("{:?}", err).contains("Restart command"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert_eq!(
+            failed_restarts
+                .lock()
+                .unwrap()
+                .get(&watched_path.to_string_lossy().into_owned()),
+            Some(&v2)
+        );
+
+        let err = processor_with_restart(
+            &watched_path,
+            Some("false".to_string()),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap_err();
+        assert!(format!("{:?}", err).contains("Restart command"));
+
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        let err = processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("Refusing to run the restart command")
+        );
+        assert!(!watched_path.join("served.txt").exists());
+        write_fixture_crate(&watched_path, "fixture-version-two");
+
+        processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        )
+        .update_from_remote()
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("served.txt")).unwrap(),
+            "fixture-version-two\n"
+        );
+        assert!(
+            !failed_restarts
+                .lock()
+                .unwrap()
+                .contains_key(&watched_path.to_string_lossy().into_owned())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restart_does_not_run_for_an_out_dir_triggered_build() {
+        let root = temp_dir("restart-skipped-for-out-dir-build");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+
+        let failed_restarts = new_failed_restarts();
+        let mut processor = processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        );
+        processor.config.out_dir = Some("dist-out".to_string());
+        processor.update_from_remote().unwrap();
+        assert!(fixture_artifact(&watched_path).exists());
+        assert!(!watched_path.join("served.txt").exists());
+
+        let mut processor = processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        );
+        processor.config.out_dir = Some("dist-out".to_string());
+        processor.update_from_remote().unwrap();
+        assert!(!watched_path.join("served.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn restart_does_not_run_when_the_build_fails() {
+        let root = temp_dir("restart-skipped-on-build-failure");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        write_sentinel_fixture_crate(&upstream_path, "fixture-version-two");
+        commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        let failed_builds = new_failed_builds();
+        let failed_restarts = new_failed_restarts();
+        std::fs::write(watched_path.join("fail-build"), "").unwrap();
+        let mut processor = processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        );
+        processor.failed_builds = failed_builds.clone();
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("Failed to build"));
+        assert!(!watched_path.join("served.txt").exists());
+
+        std::fs::remove_file(watched_path.join("fail-build")).unwrap();
+        let mut processor = processor_with_restart(
+            &watched_path,
+            Some(serve_command(&watched_path)),
+            failed_restarts.clone(),
+        );
+        processor.failed_builds = failed_builds.clone();
+        processor.update_from_remote().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("served.txt")).unwrap(),
+            "fixture-version-two\n"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

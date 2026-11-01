@@ -200,6 +200,12 @@ fn run_artifact(artifact: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn count_in_log(path: &Path, needle: &str) -> usize {
+    std::fs::read_to_string(path)
+        .map(|contents| contents.matches(needle).count())
+        .unwrap_or(0)
+}
+
 fn read_log(path: &Path) -> String {
     let mut contents = String::new();
     if let Ok(mut file) = std::fs::File::open(path) {
@@ -340,11 +346,37 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     );
     let edited = repos.replace(
         "build_command = \"\"",
-        "build_strategy = \"rust\"\nbuild_command = \"\"",
+        &format!(
+            "build_strategy = \"rust\"\nbuild_command = \"\"\nrestart_command = \"./target/debug/fixture-app{} > served.txt\"",
+            std::env::consts::EXE_SUFFIX
+        ),
     );
     let edit_tmp = config_dir.join("repositories.toml.tmp");
     std::fs::write(&edit_tmp, edited).unwrap();
     std::fs::rename(&edit_tmp, &repos_path).unwrap();
+
+    let cycles_before_edit = count_in_log(&daemon_log_path, "Updating repo: watched");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while count_in_log(&daemon_log_path, "Updating repo: watched") < cycles_before_edit + 2 {
+        if let Some(status) = daemon_guard.exited() {
+            panic!(
+                "daemon exited with {} while idling at v1; daemon log tail:\n{}",
+                status,
+                read_log(&daemon_log_path)
+            );
+        }
+        if Instant::now() > deadline {
+            panic!(
+                "daemon did not complete two cycles with the edited config within 30s; daemon log tail:\n{}",
+                read_log(&daemon_log_path)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        !watched_path.join("served.txt").exists(),
+        "restart command ran even though HEAD never changed"
+    );
 
     let upstream = git2::Repository::open(&upstream_path).unwrap();
     write_fixture_crate(&upstream_path, "fixture-version-two");
@@ -382,6 +414,34 @@ fn full_user_flow_add_edit_remote_update_and_build() {
         ),
     };
     assert!(built_output.contains("fixture-version-two"));
+
+    let served_path = watched_path.join("served.txt");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut served_output = None;
+    while Instant::now() < deadline {
+        if let Some(status) = daemon_guard.exited() {
+            panic!(
+                "daemon exited with {} during the restart wait; daemon log tail:\n{}",
+                status,
+                read_log(&daemon_log_path)
+            );
+        }
+        if let Ok(contents) = std::fs::read_to_string(&served_path) {
+            if contents.contains("fixture-version-two") {
+                served_output = Some(contents);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    let served_output = match served_output {
+        Some(output) => output,
+        None => panic!(
+            "daemon did not run the restart command after the v2 build within 60s; daemon log tail:\n{}",
+            read_log(&daemon_log_path)
+        ),
+    };
+    assert!(served_output.contains("fixture-version-two"));
 
     let watched = git2::Repository::open(&watched_path).unwrap();
     assert_eq!(watched.head().unwrap().target().unwrap(), v2);

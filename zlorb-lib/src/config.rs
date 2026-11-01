@@ -19,10 +19,19 @@ pub struct RepositoryConfiguration {
     pub build_strategy: Option<String>,
     #[serde(default)]
     pub build_command: String,
+    #[serde(default)]
+    pub restart_command: Option<String>,
     pub out_dir: Option<String>,
 }
 
 impl RepositoryConfiguration {
+    pub fn resolved_restart_command(&self) -> Option<&str> {
+        self.restart_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+    }
+
     pub fn resolved_build_strategy(&self) -> Result<BuildStrategyKind, ZlorbError> {
         if let Some(raw) = &self.build_strategy {
             let value = raw.trim().to_lowercase();
@@ -70,6 +79,7 @@ mod tests {
             branch: "master".to_string(),
             build_strategy: build_strategy.map(|s| s.to_string()),
             build_command: build_command.to_string(),
+            restart_command: None,
             out_dir: None,
         }
     }
@@ -188,6 +198,29 @@ mod tests {
             parsed.resolved_build_strategy().unwrap(),
             BuildStrategyKind::Bun
         );
+    }
+
+    #[test]
+    fn toml_with_restart_command_parses_and_resolves_it() {
+        let parsed: RepositoryConfiguration = toml::from_str(
+            "name = \"demo\"\npath = \"/tmp/demo\"\nremote = \"origin\"\nbranch = \"master\"\nbuild_strategy = \"rust\"\nrestart_command = \" ./deploy.sh \"\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.restart_command.as_deref(), Some(" ./deploy.sh "));
+        assert_eq!(parsed.resolved_restart_command(), Some("./deploy.sh"));
+    }
+
+    #[test]
+    fn missing_or_blank_restart_command_resolves_to_none() {
+        let parsed: RepositoryConfiguration = toml::from_str(
+            "name = \"demo\"\npath = \"/tmp/demo\"\nremote = \"origin\"\nbranch = \"master\"\nbuild_strategy = \"rust\"\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.restart_command, None);
+        assert_eq!(parsed.resolved_restart_command(), None);
+        let mut blank = config(None, "");
+        blank.restart_command = Some("  ".to_string());
+        assert_eq!(blank.resolved_restart_command(), None);
     }
 
     #[test]
