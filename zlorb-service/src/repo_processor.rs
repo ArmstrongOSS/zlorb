@@ -660,13 +660,29 @@ impl RepoProcessor {
             if index.get_path(&path, 0).is_some() {
                 continue;
             }
-            let is_file = std::fs::symlink_metadata(&full_path)
-                .map(|metadata| !metadata.is_dir())
-                .unwrap_or(false);
-            if !is_file {
+            let Ok(metadata) = std::fs::symlink_metadata(&full_path) else {
                 continue;
-            }
-            let Ok(contents) = std::fs::read(&full_path) else {
+            };
+            let file_type = metadata.file_type();
+            let contents = if file_type.is_symlink() {
+                let Ok(target) = std::fs::read_link(&full_path) else {
+                    continue;
+                };
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStrExt;
+                    target.as_os_str().as_bytes().to_vec()
+                }
+                #[cfg(not(unix))]
+                {
+                    target.to_string_lossy().into_owned().into_bytes()
+                }
+            } else if file_type.is_file() {
+                let Ok(contents) = std::fs::read(&full_path) else {
+                    continue;
+                };
+                contents
+            } else {
                 continue;
             };
             let Ok(disk_id) = Oid::hash_object(git2::ObjectType::Blob, &contents) else {
@@ -1216,6 +1232,56 @@ mod tests {
                 .contains("fixture-version-two")
         );
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rollback_cleanup_removes_matching_symlink_and_skips_fifo() {
+        let root = temp_dir("rollback-cleanup-types");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        let v1 = commit_all(&watched, "v1");
+        std::fs::write(watched_path.join("new.txt"), "new file\n").unwrap();
+        std::os::unix::fs::symlink("src/main.rs", watched_path.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("Cargo.toml", watched_path.join("stale-link.txt")).unwrap();
+        std::fs::write(watched_path.join("fifo.txt"), "fifo content\n").unwrap();
+        let v2 = commit_all(&watched, "v2");
+        let v1_commit = watched.find_commit(v1).unwrap();
+        watched
+            .reset(v1_commit.as_object(), git2::ResetType::Mixed, None)
+            .unwrap();
+        drop(v1_commit);
+        drop(watched);
+        std::fs::remove_file(watched_path.join("stale-link.txt")).unwrap();
+        std::os::unix::fs::symlink("src/main.rs", watched_path.join("stale-link.txt")).unwrap();
+        std::fs::remove_file(watched_path.join("fifo.txt")).unwrap();
+        let mkfifo = std::process::Command::new("mkfifo")
+            .arg(watched_path.join("fifo.txt"))
+            .status()
+            .unwrap();
+        assert!(mkfifo.success());
+
+        processor_for(&watched_path)._remove_partial_update_files(v1, v2);
+
+        assert!(!watched_path.join("new.txt").exists());
+        assert!(std::fs::symlink_metadata(watched_path.join("link.txt")).is_err());
+        assert!(
+            std::fs::symlink_metadata(watched_path.join("stale-link.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::symlink_metadata(watched_path.join("fifo.txt"))
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
