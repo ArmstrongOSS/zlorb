@@ -14,6 +14,10 @@ impl Logger {
         println!("[{}ERROR{}]: {}", RED, RESET, msg);
     }
 
+    pub fn warn(msg: String) {
+        println!("[{}WARN{}]: {}", YELLOW, RESET, msg);
+    }
+
     pub fn debug(msg: String) {
         println!("[{}DEBUG{}]: {}", YELLOW, RESET, msg);
     }
