@@ -35,14 +35,22 @@ impl BunManager {
     fn build(&self, bun_path: &Path, repo_path: &Path) -> Result<(), ZlorbError> {
         run_bun_step(bun_path, &["run", "build"], repo_path, "build")
     }
+
+    pub(crate) fn exec_with_bun_path(
+        &self,
+        config: &RepositoryConfiguration,
+        bun_path: &Path,
+    ) -> Result<(), ZlorbError> {
+        let repo_path = Path::new(&config.path);
+        self.install_dependencies(bun_path, repo_path)?;
+        self.build(bun_path, repo_path)
+    }
 }
 
 impl Manager for BunManager {
     fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
         let bun_path = self.check_bun_installed()?;
-        let repo_path = Path::new(&config.path);
-        self.install_dependencies(&bun_path, repo_path)?;
-        self.build(&bun_path, repo_path)
+        self.exec_with_bun_path(config, &bun_path)
     }
 }
 
