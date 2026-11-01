@@ -637,20 +637,37 @@ impl RepoProcessor {
     }
 
     fn _verify_rollback(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
-        let actual = self.repo.head().ok().and_then(|head| head.target());
-        match actual {
+        let refname = format!("refs/heads/{}", self.config.branch);
+        let reference = match self.repo.find_reference(&refname) {
+            Ok(reference) => reference,
+            Err(e) => {
+                Logger::error(format!(
+                    "Rollback verification failed for {}: {} could not be read after rolling back a failed fast-forward ({}), expected {}; the repository state is unknown and this update will not be retried or built without manual intervention",
+                    self.config.name, refname, e, local_oid
+                ));
+                return false;
+            }
+        };
+        match reference.target() {
             Some(oid) if oid == local_oid => true,
+            Some(oid) if oid == fetch_oid => {
+                Logger::error(format!(
+                    "Rollback verification failed for {}: {} is {} after rolling back a failed fast-forward, expected {}; the repository is left at the fetched commit {} and later cycles will read it as up to date, so this update will not be retried or built without manual intervention",
+                    self.config.name, refname, oid, local_oid, fetch_oid
+                ));
+                false
+            }
             Some(oid) => {
                 Logger::error(format!(
-                    "Rollback verification failed for {}: HEAD is {} after rolling back a failed fast-forward, expected {}; the repository is left at the fetched commit {} and later cycles will read it as up to date, so this update will not be retried or built without manual intervention",
-                    self.config.name, oid, local_oid, fetch_oid
+                    "Rollback verification failed for {}: {} is {} after rolling back a failed fast-forward, expected {}; it is not the fetched commit {}, so the rolled-back state does not hold and the next cycle will re-read the branch against the remote",
+                    self.config.name, refname, oid, local_oid, fetch_oid
                 ));
                 false
             }
             None => {
                 Logger::error(format!(
-                    "Rollback verification failed for {}: HEAD could not be read after rolling back a failed fast-forward, expected {}; the repository state is unknown and this update will not be retried or built without manual intervention",
-                    self.config.name, local_oid
+                    "Rollback verification failed for {}: {} has no target after rolling back a failed fast-forward, expected {}; the repository state is unknown and this update will not be retried or built without manual intervention",
+                    self.config.name, refname, local_oid
                 ));
                 false
             }
@@ -1355,6 +1372,70 @@ mod tests {
         std::fs::remove_file(&lock_path).unwrap();
         assert!(processor._rollback_fast_forward(v1, v2));
         assert_eq!(head_oid(&processor.repo), v1);
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_verification_follows_branch_ref_not_detached_head() {
+        let root = temp_dir("rollback-verification-branch-ref");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        let branch_target = |processor: &RepoProcessor| {
+            processor
+                .repo
+                .find_reference("refs/heads/master")
+                .unwrap()
+                .target()
+                .unwrap()
+        };
+
+        processor.repo.set_head_detached(v1).unwrap();
+        let lock_path = watched_path.join(".git/refs/heads/master.lock");
+        std::fs::write(&lock_path, "").unwrap();
+        assert!(!processor._rollback_fast_forward(v1, v2));
+        assert_eq!(branch_target(&processor), v2);
+        assert_eq!(head_oid(&processor.repo), v1);
+
+        std::fs::remove_file(&lock_path).unwrap();
+        processor.repo.set_head_detached(v2).unwrap();
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert_eq!(branch_target(&processor), v1);
+        assert_eq!(head_oid(&processor.repo), v2);
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_verification_fails_when_branch_ref_cannot_be_read() {
+        let root = temp_dir("rollback-verification-unreadable-ref");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        let ref_path = watched_path.join(".git/refs/heads/master");
+        assert!(ref_path.exists());
+        std::fs::remove_file(&ref_path).unwrap();
+        assert!(!processor._verify_rollback(v1, v2));
+
+        std::fs::write(&ref_path, "ref: refs/heads/master-missing\n").unwrap();
+        assert!(!processor._verify_rollback(v1, v2));
         drop(processor);
         let _ = std::fs::remove_dir_all(&root);
     }
