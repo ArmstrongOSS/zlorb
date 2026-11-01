@@ -23,7 +23,7 @@ impl TemplateManager {
         run_step(runtime, &["run", "build"], repo_path, "build")
     }
 
-    fn exec_with_search_path(
+    pub(crate) fn exec_with_search_path(
         &self,
         config: &RepositoryConfiguration,
         search_path: Option<OsString>,

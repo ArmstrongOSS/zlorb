@@ -1,5 +1,5 @@
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
 };
 
@@ -10,14 +10,18 @@ use crate::build_system_executor::managers::manager::Manager;
 pub struct RustManager;
 
 impl RustManager {
-    fn build(&self, repo_path: &Path) -> Result<(), ZlorbError> {
-        run_cargo_build(Path::new("cargo"), repo_path)
+    pub(crate) fn exec_with_cargo_path(
+        &self,
+        config: &RepositoryConfiguration,
+        cargo: &Path,
+    ) -> Result<(), ZlorbError> {
+        run_cargo_build(cargo, Path::new(&config.path))
     }
 }
 
 impl Manager for RustManager {
     fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
-        self.build(&PathBuf::from(&config.path))
+        self.exec_with_cargo_path(config, Path::new("cargo"))
     }
 }
 
@@ -49,6 +53,7 @@ fn run_cargo_build(cargo: &Path, repo_path: &Path) -> Result<(), ZlorbError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
