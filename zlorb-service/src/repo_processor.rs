@@ -606,15 +606,17 @@ impl RepoProcessor {
 
     fn _rollback_fast_forward(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
         let refname = format!("refs/heads/{}", self.config.branch);
+        let mut branch_restored = false;
         match self.repo.find_reference(&refname) {
             Ok(mut reference) => {
-                if let Err(e) =
-                    reference.set_target(local_oid, "Rolling back failed fast-forward")
-                {
-                    Logger::error(format!(
-                        "Failed to roll back {} to {}: {}",
-                        refname, local_oid, e
-                    ));
+                match reference.set_target(local_oid, "Rolling back failed fast-forward") {
+                    Ok(_) => branch_restored = true,
+                    Err(e) => {
+                        Logger::error(format!(
+                            "Failed to roll back {} to {}: {}",
+                            refname, local_oid, e
+                        ));
+                    }
                 }
             }
             Err(e) => {
@@ -625,15 +627,52 @@ impl RepoProcessor {
             }
         }
         self._remove_partial_update_files(local_oid, fetch_oid);
-        let mut checkout = git2::build::CheckoutBuilder::default();
-        checkout.force();
-        if let Err(e) = self.repo.checkout_head(Some(&mut checkout)) {
-            Logger::error(format!(
-                "Failed to restore the working tree after a failed fast-forward: {}",
-                e
-            ));
+        let mut tree_restored = false;
+        match self.repo.find_commit(local_oid) {
+            Ok(commit) => {
+                let mut checkout = git2::build::CheckoutBuilder::default();
+                checkout.force();
+                match self
+                    .repo
+                    .checkout_tree(commit.as_object(), Some(&mut checkout))
+                {
+                    Ok(_) => tree_restored = true,
+                    Err(e) => {
+                        Logger::error(format!(
+                            "Failed to restore the working tree after a failed fast-forward: {}",
+                            e
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                Logger::error(format!(
+                    "Failed to restore the working tree after a failed fast-forward: {}",
+                    e
+                ));
+            }
         }
-        self._verify_rollback(local_oid, fetch_oid)
+        let mut head_restored = !branch_restored;
+        if branch_restored {
+            match self.repo.set_head(&refname) {
+                Ok(_) => head_restored = true,
+                Err(e) => {
+                    Logger::error(format!(
+                        "Failed to point HEAD at {} after rolling back a failed fast-forward: {}",
+                        refname, e
+                    ));
+                }
+            }
+        }
+        let verified = self._verify_rollback(local_oid, fetch_oid);
+        if verified && !(tree_restored && head_restored) {
+            Logger::error(format!(
+                "Rollback verification failed for {}: {} is back at {}, but the working tree or HEAD could not be restored to match, so the rolled-back state does not hold and this update will not be built from it without manual intervention",
+                self.config.name, refname, local_oid
+            ));
+            return false;
+        }
+        verified
     }
 
     fn _verify_rollback(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
@@ -651,10 +690,24 @@ impl RepoProcessor {
         match reference.target() {
             Some(oid) if oid == local_oid => true,
             Some(oid) if oid == fetch_oid => {
-                Logger::error(format!(
-                    "Rollback verification failed for {}: {} is {} after rolling back a failed fast-forward, expected {}; the repository is left at the fetched commit {} and later cycles will read it as up to date, so this update will not be retried or built without manual intervention",
-                    self.config.name, refname, oid, local_oid, fetch_oid
-                ));
+                let head_detached_at_local = self.repo.head_detached().unwrap_or(false)
+                    && self
+                        .repo
+                        .head()
+                        .ok()
+                        .and_then(|head| head.target())
+                        == Some(local_oid);
+                if head_detached_at_local {
+                    Logger::error(format!(
+                        "Rollback verification failed for {}: {} is {} after rolling back a failed fast-forward, expected {}; the branch is left at the fetched commit {}, but HEAD is detached at {}, so later cycles compare against the detached HEAD and may retry the update while the branch itself will not move without manual intervention",
+                        self.config.name, refname, oid, local_oid, fetch_oid, local_oid
+                    ));
+                } else {
+                    Logger::error(format!(
+                        "Rollback verification failed for {}: {} is {} after rolling back a failed fast-forward, expected {}; the branch and HEAD are left at the fetched commit {} and later cycles will read it as up to date, so this update will not be retried or built without manual intervention",
+                        self.config.name, refname, oid, local_oid, fetch_oid
+                    ));
+                }
                 false
             }
             Some(oid) => {
@@ -1405,12 +1458,160 @@ mod tests {
         assert!(!processor._rollback_fast_forward(v1, v2));
         assert_eq!(branch_target(&processor), v2);
         assert_eq!(head_oid(&processor.repo), v1);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
 
         std::fs::remove_file(&lock_path).unwrap();
         processor.repo.set_head_detached(v2).unwrap();
         assert!(processor._rollback_fast_forward(v1, v2));
         assert_eq!(branch_target(&processor), v1);
-        assert_eq!(head_oid(&processor.repo), v2);
+        assert_eq!(head_oid(&processor.repo), v1);
+        assert!(!processor.repo.head_detached().unwrap());
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_restores_rolled_back_tree_when_head_detached_at_fetched_commit() {
+        let root = temp_dir("rollback-tree-detached-at-fetched");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        std::fs::write(watched_path.join("only-v1.txt"), "only in v1\n").unwrap();
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        std::fs::remove_file(watched_path.join("only-v1.txt")).unwrap();
+        std::fs::write(watched_path.join("new.txt"), "new in v2\n").unwrap();
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        processor.repo.set_head_detached(v2).unwrap();
+        let lock_path = watched_path.join(".git/refs/heads/master.lock");
+        std::fs::write(&lock_path, "").unwrap();
+        assert!(!processor._rollback_fast_forward(v1, v2));
+        assert_eq!(
+            processor
+                .repo
+                .find_reference("refs/heads/master")
+                .unwrap()
+                .target()
+                .unwrap(),
+            v2
+        );
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+        assert!(!watched_path.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("only-v1.txt")).unwrap(),
+            "only in v1\n"
+        );
+        assert!(processor.repo.head_detached().unwrap());
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_reports_failure_when_the_tree_cannot_be_restored() {
+        let root = temp_dir("rollback-tree-restore-failure");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        std::fs::write(watched_path.join("only-v1.txt"), "only in v1\n").unwrap();
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        std::fs::remove_file(watched_path.join("only-v1.txt")).unwrap();
+        std::fs::write(watched_path.join("new.txt"), "new in v2\n").unwrap();
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        let index_lock = watched_path.join(".git/index.lock");
+        std::fs::write(&index_lock, "").unwrap();
+        assert!(!processor._rollback_fast_forward(v1, v2));
+        assert_eq!(
+            processor
+                .repo
+                .find_reference("refs/heads/master")
+                .unwrap()
+                .target()
+                .unwrap(),
+            v1
+        );
+
+        std::fs::remove_file(&index_lock).unwrap();
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+        assert!(!watched_path.join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("only-v1.txt")).unwrap(),
+            "only in v1\n"
+        );
+        let mut status_opts = git2::StatusOptions::new();
+        status_opts.include_untracked(false);
+        let tracked_status_clean = {
+            let statuses = processor
+                .repo
+                .statuses(Some(&mut status_opts))
+                .unwrap();
+            statuses.is_empty()
+        };
+        assert!(tracked_status_clean);
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_reports_failure_when_head_cannot_be_reattached() {
+        let root = temp_dir("rollback-head-restore-failure");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        processor.repo.set_head_detached(v2).unwrap();
+        let head_lock = watched_path.join(".git/HEAD.lock");
+        std::fs::write(&head_lock, "").unwrap();
+        assert!(!processor._rollback_fast_forward(v1, v2));
+        assert_eq!(
+            processor
+                .repo
+                .find_reference("refs/heads/master")
+                .unwrap()
+                .target()
+                .unwrap(),
+            v1
+        );
+
+        std::fs::remove_file(&head_lock).unwrap();
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert_eq!(head_oid(&processor.repo), v1);
+        assert!(!processor.repo.head_detached().unwrap());
         drop(processor);
         let _ = std::fs::remove_dir_all(&root);
     }
