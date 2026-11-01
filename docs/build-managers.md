@@ -100,7 +100,12 @@ copy them. Fixing them is separate work from adding a manager.
    declared. Rename the `template-runtime` literal in the tests to match
    the new runtime name.
 2. Register the strategy string in `zlorb-lib`:
-   - Add a variant to `BuildStrategyKind` in `zlorb-lib/src/config.rs`.
+   - Add the variant name to the `build_strategy_kinds!` list in
+     `zlorb-lib/src/config.rs`. That one list is the definition site:
+     it generates both the `BuildStrategyKind` enum and
+     `BuildStrategyKind::ALL`, so a variant cannot exist without also
+     being enumerated. Extend the `all_kinds_contains_each_variant_once`
+     test in that file to name the new variant as well.
    - Map the strategy string to it in `resolved_build_strategy()`. Decide
      any alias up front (the way `"cargo"` aliases `"rust"`) and name the
      full accepted set, aliases included, in the error messages for that
@@ -130,15 +135,15 @@ copy them. Fixing them is separate work from adding a manager.
      add a case for it (a stand-in runtime name, its step scripts in
      order, and a `run` function that drives its `exec` against a
      stand-in binary, following the template manager's
-     `exec_with_search_path` pattern for the test seam), add its
+     `exec_with_search_path` pattern for the test seam), and add its
      arms to the exhaustive matches over `BuildStrategyKind` and
-     `BuildStrategy` in that file, and link its kind into the
-     `next_kind` chain in that file. Every conformance test derives
-     the managers it exercises from that one chain, so a kind the
-     chain does not reach is never exercised. The matches have no
+     `BuildStrategy` in that file. Every conformance test derives the
+     kinds it exercises from `BuildStrategyKind::ALL`, which is
+     generated from the same list that defines the enum, so there is
+     no separate registration list or chain to update and no way to
+     add a kind without the suite exercising it. The matches have no
      wildcard arm, so a strategy variant with no case arms breaks
-     the test build; the chain is the step that makes the finished
-     case run.
+     the test build.
 4. Document the new value in every place `README.md` lists strategies
    or shipped managers: the `build_strategy` paragraph under
    Configuration, the Getting Started step that names the valid values,
@@ -152,8 +157,8 @@ copy them. Fixing them is separate work from adding a manager.
 The shared conformance suite in
 `zlorb-service/src/build_system_executor/managers/conformance.rs` is the
 enforcing gate for the exec-level items on this list. It drives every
-manager reached by its `next_kind` chain — Bun, Rust, and the template
-manager — through one set of checks with hermetic stand-in binaries:
+manager in `BuildStrategyKind::ALL` — Bun and Rust — plus the template
+manager, through one set of checks with hermetic stand-in binaries:
 the manager's steps run in order in the repo directory, a command that
 writes to stderr but exits zero still succeeds, failing each step in
 turn returns an error naming that step and carrying the command's
@@ -194,12 +199,12 @@ assumption:
       `zlorb-lib`, `select_strategy()` returns the new variant, and tests
       cover both.
 - [ ] Conformance gate: the manager has a case in the shared conformance
-      suite (`managers/conformance.rs`), its kind is linked into the
-      suite's `next_kind` chain, and the suite passes for it. The suite's
-      exhaustive matches over `BuildStrategyKind` and `BuildStrategy`
-      fail the test build for a variant with no case arms, and every
-      conformance test exercises exactly the kinds the chain reaches, so
-      a passing `cargo test` with the chain linked is the proof this
+      suite (`managers/conformance.rs`) and the suite passes for it.
+      The suite's exhaustive matches over `BuildStrategyKind` and
+      `BuildStrategy` fail the test build for a variant with no case
+      arms, and every conformance test exercises exactly the kinds in
+      `BuildStrategyKind::ALL`, which is generated from the enum's own
+      definition list, so a passing `cargo test` is the proof this
       item holds.
 - [ ] No new manager shipped unused: the strategy exists because a real
       project is being watched with it.

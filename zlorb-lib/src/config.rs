@@ -2,12 +2,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ZlorbError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildStrategyKind {
-    Bun,
-    Rust,
+macro_rules! build_strategy_kinds {
+    ($($kind:ident),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        pub enum BuildStrategyKind {
+            $($kind),+
+        }
+
+        impl BuildStrategyKind {
+            pub const ALL: &'static [Self] = &[$(Self::$kind),+];
+        }
+    };
 }
+
+build_strategy_kinds!(Bun, Rust);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepositoryConfiguration {
@@ -85,6 +94,18 @@ mod tests {
             build_command: build_command.to_string(),
             restart_command: None,
             out_dir: None,
+        }
+    }
+
+    #[test]
+    fn all_kinds_contains_each_variant_once() {
+        assert_eq!(BuildStrategyKind::ALL.len(), 2);
+        for kind in [BuildStrategyKind::Bun, BuildStrategyKind::Rust] {
+            assert_eq!(
+                BuildStrategyKind::ALL.iter().filter(|k| **k == kind).count(),
+                1,
+                "ALL must contain {kind:?} exactly once"
+            );
         }
     }
 
