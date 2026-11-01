@@ -76,6 +76,17 @@ impl RepoProcessor {
         let should_run_build = has_updates || out_dir_missing || retrying_failed_build;
         Logger::info(format!("Should run build: {}", should_run_build));
 
+        if should_run_build && !has_updates {
+            let tracked_changes = self._tracked_local_changes()?;
+            if !tracked_changes.is_empty() {
+                return Err(ZlorbError::Other(format!(
+                    "Refusing to build {}: local changes to tracked files ({}) are not part of the commit being built. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
+                    self.config.name,
+                    tracked_changes.join(", ")
+                )));
+            }
+        }
+
         match should_run_build {
             true => {
                 Logger::info(format!(
@@ -91,8 +102,10 @@ impl RepoProcessor {
                         Ok(())
                     }
                     Err(e) => {
-                        if let Some(oid) = head_oid {
-                            self.record_failed_build(oid);
+                        let current_oid =
+                            self.repo.head().ok().and_then(|head| head.target());
+                        if current_oid.is_some() && current_oid == head_oid {
+                            self.record_failed_build(current_oid.unwrap());
                         }
                         Err(e)
                     }
@@ -928,6 +941,14 @@ mod tests {
         assert!(format!("{:?}", err).contains("Failed to build"));
         assert!(!fixture_artifact(&watched_path).exists());
 
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        let err = processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        assert!(!fixture_artifact(&watched_path).exists());
+        write_sentinel_fixture_crate(&watched_path, "fixture-version-two");
+
         std::fs::remove_file(watched_path.join("fail-build")).unwrap();
         processor_with_tracker(&watched_path, failed_builds.clone())
             .update_from_remote()
@@ -944,6 +965,51 @@ mod tests {
         processor_with_tracker(&watched_path, failed_builds.clone())
             .update_from_remote()
             .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seeded_failure_for_a_bun_repo_is_retried_and_kept_when_bun_is_missing() {
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+        let bun_path = if user == "root" {
+            PathBuf::from("/root/.bun/bin/bun")
+        } else {
+            PathBuf::from("/home").join(&user).join(".bun/bin/bun")
+        };
+        if bun_path.exists() {
+            return;
+        }
+        let root = temp_dir("bun-retry");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+
+        let failed_builds = new_failed_builds();
+        failed_builds
+            .lock()
+            .unwrap()
+            .insert(watched_path.to_string_lossy().into_owned(), v1);
+        let mut processor = processor_with_strategy(&watched_path, Some("bun"));
+        processor.failed_builds = failed_builds.clone();
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("Bun is not installed"));
+        assert_eq!(
+            failed_builds
+                .lock()
+                .unwrap()
+                .get(&watched_path.to_string_lossy().into_owned()),
+            Some(&v1)
+        );
+        let mut processor = processor_with_strategy(&watched_path, Some("bun"));
+        processor.failed_builds = failed_builds.clone();
+        assert!(processor.update_from_remote().is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
