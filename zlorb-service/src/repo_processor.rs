@@ -122,6 +122,17 @@ fn path_from_bytes(bytes: &[u8]) -> PathBuf {
     PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
 }
 
+fn stat_matches_index_entry(entry: &git2::IndexEntry, metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    entry.ino != 0
+        && metadata.ino() as u32 == entry.ino
+        && metadata.len() == u64::from(entry.file_size)
+        && metadata.mtime() == i64::from(entry.mtime.seconds())
+        && metadata.mtime_nsec() == i64::from(entry.mtime.nanoseconds())
+        && metadata.ctime() == i64::from(entry.ctime.seconds())
+        && metadata.ctime_nsec() == i64::from(entry.ctime.nanoseconds())
+}
+
 fn display_paths(paths: &[PathBuf]) -> String {
     paths
         .iter()
@@ -780,6 +791,9 @@ impl RepoProcessor {
                     hidden.push(path);
                     continue;
                 }
+            }
+            if stat_matches_index_entry(&entry, &metadata) {
+                continue;
             }
             let mut writer = match self.repo.blob_writer(Some(&path)) {
                 Ok(writer) => writer,
@@ -1647,6 +1661,56 @@ mod tests {
             std::fs::read_to_string(watched_path.join("src/main.rs"))
                 .unwrap()
                 .contains("fixture-version-two")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_with_matching_stat_skips_the_hash_check() {
+        let (root, watched_path, _v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-stat-shortcut");
+        std::fs::write(
+            watched_path.join("src/main.rs"),
+            "fn main() { println!(\"local-edit-versionx\"); }\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::MetadataExt;
+            let watched = git2::Repository::open(&watched_path).unwrap();
+            let mut index = watched.index().unwrap();
+            let mut entry = index.get_path(Path::new("src/main.rs"), 0).unwrap();
+            let metadata = std::fs::metadata(watched_path.join("src/main.rs")).unwrap();
+            entry.mtime =
+                git2::IndexTime::new(metadata.mtime() as i32, metadata.mtime_nsec() as u32);
+            entry.ctime =
+                git2::IndexTime::new(metadata.ctime() as i32, metadata.ctime_nsec() as u32);
+            entry.ino = metadata.ino() as u32;
+            entry.file_size = metadata.len() as u32;
+            entry.flags_extended |= 0x4000;
+            index.add(&entry).unwrap();
+            index.write().unwrap();
+        }
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._tracked_local_changes().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_with_stale_stat_falls_back_to_the_hash_check() {
+        let (root, watched_path, _v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-stat-stale");
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+        std::fs::write(
+            watched_path.join("src/main.rs"),
+            "fn main() { println!(\"local-edit-versionx\"); }\n",
+        )
+        .unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
         );
         let _ = std::fs::remove_dir_all(&root);
     }
