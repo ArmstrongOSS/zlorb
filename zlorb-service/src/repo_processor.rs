@@ -604,13 +604,23 @@ impl RepoProcessor {
         self._checkout_and_get_ref()
     }
 
-    fn _rollback_fast_forward(&self, local_oid: Oid, fetch_oid: Oid) {
+    fn _rollback_fast_forward(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
         let refname = format!("refs/heads/{}", self.config.branch);
-        if let Ok(mut reference) = self.repo.find_reference(&refname) {
-            if let Err(e) = reference.set_target(local_oid, "Rolling back failed fast-forward") {
+        match self.repo.find_reference(&refname) {
+            Ok(mut reference) => {
+                if let Err(e) =
+                    reference.set_target(local_oid, "Rolling back failed fast-forward")
+                {
+                    Logger::error(format!(
+                        "Failed to roll back {} to {}: {}",
+                        refname, local_oid, e
+                    ));
+                }
+            }
+            Err(e) => {
                 Logger::error(format!(
-                    "Failed to roll back {} to {}: {}",
-                    refname, local_oid, e
+                    "Failed to find {} to roll back {} after a failed fast-forward: {}",
+                    refname, self.config.name, e
                 ));
             }
         }
@@ -622,6 +632,28 @@ impl RepoProcessor {
                 "Failed to restore the working tree after a failed fast-forward: {}",
                 e
             ));
+        }
+        self._verify_rollback(local_oid, fetch_oid)
+    }
+
+    fn _verify_rollback(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
+        let actual = self.repo.head().ok().and_then(|head| head.target());
+        match actual {
+            Some(oid) if oid == local_oid => true,
+            Some(oid) => {
+                Logger::error(format!(
+                    "Rollback verification failed for {}: HEAD is {} after rolling back a failed fast-forward, expected {}; the repository is left at the fetched commit {} and later cycles will read it as up to date, so this update will not be retried or built without manual intervention",
+                    self.config.name, oid, local_oid, fetch_oid
+                ));
+                false
+            }
+            None => {
+                Logger::error(format!(
+                    "Rollback verification failed for {}: HEAD could not be read after rolling back a failed fast-forward, expected {}; the repository state is unknown and this update will not be retried or built without manual intervention",
+                    self.config.name, local_oid
+                ));
+                false
+            }
         }
     }
 
@@ -1282,6 +1314,48 @@ mod tests {
                 .file_type()
                 .is_fifo()
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_verification_reports_restored_and_unrestored_head() {
+        let root = temp_dir("rollback-verification");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert_eq!(head_oid(&processor.repo), v1);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+
+        let v2_commit = processor.repo.find_commit(v2).unwrap();
+        processor
+            .repo
+            .reset(v2_commit.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(v2_commit);
+        assert_eq!(head_oid(&processor.repo), v2);
+
+        let lock_path = watched_path.join(".git/refs/heads/master.lock");
+        std::fs::write(&lock_path, "").unwrap();
+        assert!(!processor._rollback_fast_forward(v1, v2));
+        assert_eq!(head_oid(&processor.repo), v2);
+
+        std::fs::remove_file(&lock_path).unwrap();
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert_eq!(head_oid(&processor.repo), v1);
+        drop(processor);
         let _ = std::fs::remove_dir_all(&root);
     }
 
