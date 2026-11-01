@@ -81,7 +81,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn build_error_carries_command_stderr() {
         let dir = temp_dir("stderr");

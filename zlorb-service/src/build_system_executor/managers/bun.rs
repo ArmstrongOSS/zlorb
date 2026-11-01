@@ -134,7 +134,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn step_succeeds_when_command_writes_to_stderr_but_exits_zero() {
         let dir = temp_dir("stderr-ok");
@@ -150,7 +149,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(unix)]
     #[test]
     fn step_error_carries_the_failing_steps_stderr() {
         let dir = temp_dir("stderr-fail");

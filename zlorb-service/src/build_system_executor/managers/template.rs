@@ -59,17 +59,10 @@ fn find_in_path(name: &str, search_path: Option<OsString>) -> Result<PathBuf, Zl
 }
 
 fn is_executable(path: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        match std::fs::metadata(path) {
-            Ok(metadata) => metadata.permissions().mode() & 0o111 != 0,
-            Err(_) => false,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        true
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.permissions().mode() & 0o111 != 0,
+        Err(_) => false,
     }
 }
 
@@ -134,7 +127,6 @@ mod tests {
         let dir = temp_dir("found");
         let runtime = dir.join("template-runtime");
         std::fs::write(&runtime, "").unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -143,7 +135,6 @@ mod tests {
         assert_eq!(found, runtime);
     }
 
-    #[cfg(unix)]
     #[test]
     fn find_in_path_skips_non_executable_files() {
         let dir = temp_dir("not-executable");
@@ -163,7 +154,6 @@ mod tests {
         );
         let runtime = dir.join("template-runtime");
         std::fs::write(&runtime, "").unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -201,7 +191,6 @@ mod tests {
         assert!(run_step(&missing, &[], &dir, "build").is_err());
     }
 
-    #[cfg(unix)]
     fn write_runtime(bin_dir: &Path, repo_dir: &Path, install_body: &str, run_body: &str) {
         std::os::unix::fs::symlink("/bin/sh", bin_dir.join("template-runtime")).unwrap();
         std::fs::write(repo_dir.join("install"), install_body).unwrap();
@@ -221,7 +210,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn exec_runs_install_then_build_in_the_repo_dir() {
         let bin_dir = temp_dir("exec-bin");
@@ -254,7 +242,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn exec_error_carries_the_failing_steps_stderr() {
         let bin_dir = temp_dir("exec-fail-bin");
