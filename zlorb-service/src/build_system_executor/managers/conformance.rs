@@ -110,21 +110,8 @@ fn case_for_strategy(strategy: &BuildStrategy) -> ConformanceCase {
     }
 }
 
-fn next_kind(kind: BuildStrategyKind) -> Option<BuildStrategyKind> {
-    match kind {
-        BuildStrategyKind::Bun => Some(BuildStrategyKind::Rust),
-        BuildStrategyKind::Rust => None,
-    }
-}
-
 fn registered_kinds() -> Vec<BuildStrategyKind> {
-    let mut kinds = Vec::new();
-    let mut current = Some(BuildStrategyKind::Bun);
-    while let Some(kind) = current {
-        kinds.push(kind);
-        current = next_kind(kind);
-    }
-    kinds
+    BuildStrategyKind::ALL.to_vec()
 }
 
 fn registered_cases() -> Vec<ConformanceCase> {
@@ -201,6 +188,24 @@ fn repo_config(repo_dir: &Path) -> RepositoryConfiguration {
         restart_command: None,
         out_dir: None,
     }
+}
+
+#[test]
+fn registered_kinds_are_exactly_all_kinds_once_each() {
+    assert_eq!(registered_kinds(), BuildStrategyKind::ALL);
+    for kind in BuildStrategyKind::ALL {
+        assert_eq!(
+            registered_kinds().iter().filter(|k| *k == kind).count(),
+            1,
+            "registered kinds must contain {kind:?} exactly once"
+        );
+    }
+    let cases = registered_cases();
+    assert_eq!(cases.len(), BuildStrategyKind::ALL.len() + 1);
+    for (index, kind) in BuildStrategyKind::ALL.iter().enumerate() {
+        assert_eq!(cases[index].name, case_for_kind(*kind).name);
+    }
+    assert_eq!(cases[cases.len() - 1].name, template_case().name);
 }
 
 #[test]
