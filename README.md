@@ -113,6 +113,12 @@ The daemon is the systemd service registered by `zlorb-ctl setup`: a per-user se
 
 zlorb will automatically keep your repositories updated and built, saving you time and effort.
 
+## 🏗️ Adding a build manager
+
+Zlorb ships build managers for Bun and Rust today. Managers are built on demand for a real project that needs them, not prebuilt for every stack.
+
+If a project needs a package manager or build system Zlorb does not have yet, the path is a new manager module: implement the shared `Manager` interface, modeled on the existing Bun and Rust managers. The contract, registration steps, and conformance checklist are in [docs/build-managers.md](docs/build-managers.md), and a copyable starting point is at `zlorb-service/src/build_system_executor/managers/template.rs`.
+
 ## 🤝 Contributing
 Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch model, the build and test requirements, and how changes are reviewed. Pull requests and feedback are welcome! To add support for a new build toolchain, follow [Adding a build manager](https://github.com/ArmstrongOSS/zlorb/blob/dev/docs/build-managers.md): it covers the strategy pattern, the copyable manager template, and the conformance checklist a new manager must pass.
 
