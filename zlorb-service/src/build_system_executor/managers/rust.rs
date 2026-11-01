@@ -85,16 +85,9 @@ mod tests {
     #[test]
     fn build_error_carries_command_stderr() {
         let dir = temp_dir("stderr");
-        let cargo = dir.join("cargo");
-        std::fs::write(
-            &cargo,
-            "#!/bin/sh\necho marked-cargo-failure >&2\nexit 101\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let err = run_cargo_build(&cargo, &dir).unwrap_err();
-        assert!(format!("{err:?}").contains("marked-cargo-failure"));
+        let err = run_cargo_build(Path::new("/bin/sh"), &dir).unwrap_err();
+        assert!(format!("{err:?}").contains("Failed to build"));
+        assert!(format!("{err:?}").contains("cannot open build"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
