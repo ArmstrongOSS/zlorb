@@ -76,12 +76,10 @@ These are facts about the current code, recorded so a new manager does not
 copy them. Fixing them is separate work from adding a manager.
 
 - `BunManager` discovers its runtime at a fixed per-user path
-  (`~/.bun/bin/bun`), not on `PATH`. Its install step treats any stderr
-  output from `bun install` as failure and never checks that command's
-  exit status, so a failed install with empty stderr passes and a
-  successful install that writes warnings to stderr fails. Its build step
-  does error on any non-success status. Its install step canonicalizes
-  the repo path while its build step uses `config.path` as given.
+  (`~/.bun/bin/bun`), not on `PATH`. Its install and build steps check
+  each command's exit status, log failures with `Logger`, and return an
+  error carrying the step name and the command's stderr, and both run
+  with `config.path` as given as the working directory.
 - `RustManager` has no runtime discovery and no install step: it spawns
   the bare name `cargo` (resolved through `PATH` by the operating system).
   Its build step does check the exit status, logs failures with
