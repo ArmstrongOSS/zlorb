@@ -105,7 +105,8 @@ copy them. Fixing them is separate work from adding a manager.
      it generates both the `BuildStrategyKind` enum and
      `BuildStrategyKind::ALL`, so a variant cannot exist without also
      being enumerated. Extend the `all_kinds_contains_each_variant_once`
-     test in that file to name the new variant as well.
+     test in that file to name the new variant and update its expected
+     count to match.
    - Map the strategy string to it in `resolved_build_strategy()`. Decide
      any alias up front (the way `"cargo"` aliases `"rust"`) and name the
      full accepted set, aliases included, in the error messages for that
