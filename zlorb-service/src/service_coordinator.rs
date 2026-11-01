@@ -1,5 +1,7 @@
 use crate::config_manager::ConfigManager;
-use crate::repo_processor::{FailedBuilds, RepoProcessor, new_failed_builds};
+use crate::repo_processor::{
+    FailedBuilds, FailedRestarts, RepoProcessor, new_failed_builds, new_failed_restarts,
+};
 use crate::service_config::ServiceConfig;
 use zlorb_lib::error::ZlorbError;
 use zlorb_lib::log::Logger;
@@ -11,6 +13,7 @@ pub struct ServiceCoordinator {
     first_run_flag: bool,
     config_manager: ConfigManager,
     failed_builds: FailedBuilds,
+    failed_restarts: FailedRestarts,
 }
 
 impl ServiceCoordinator {
@@ -26,6 +29,7 @@ impl ServiceCoordinator {
             first_run_flag: true,
             config_manager,
             failed_builds: new_failed_builds(),
+            failed_restarts: new_failed_restarts(),
         }
     }
 
@@ -58,6 +62,7 @@ impl ServiceCoordinator {
             Ok(mut repos) => {
                 for repo in &mut repos {
                     repo.failed_builds = self.failed_builds.clone();
+                    repo.failed_restarts = self.failed_restarts.clone();
                 }
                 self.repo_configs = repos;
             }
@@ -320,6 +325,33 @@ mod tests {
         assert_eq!(coordinator.repo_configs.len(), 1);
         assert!(std::sync::Arc::ptr_eq(
             &coordinator.repo_configs[0].failed_builds,
+            &first_tracker
+        ));
+    }
+
+    #[test]
+    fn reload_shares_one_failed_restarts_tracker_across_processors() {
+        let root = temp_dir("restart-tracker-shared");
+        let config_dir = root.join("config");
+        let repo_path = root.join("repo");
+        init_repo(&repo_path);
+        write_repos(&config_dir, &repo_entry("repo", &repo_path));
+        write_service_config(&config_dir, 5);
+        let mut coordinator =
+            ServiceCoordinator::with_config_manager(ConfigManager::with_config_dir(
+                config_dir.clone(),
+            ));
+        coordinator.reload_configs();
+        assert_eq!(coordinator.repo_configs.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(
+            &coordinator.repo_configs[0].failed_restarts,
+            &coordinator.failed_restarts
+        ));
+        let first_tracker = coordinator.repo_configs[0].failed_restarts.clone();
+        coordinator.reload_configs();
+        assert_eq!(coordinator.repo_configs.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(
+            &coordinator.repo_configs[0].failed_restarts,
             &first_tracker
         ));
     }

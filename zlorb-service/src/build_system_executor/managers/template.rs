@@ -219,6 +219,7 @@ mod tests {
             branch: "master".to_string(),
             build_strategy: None,
             build_command: "".to_string(),
+            restart_command: None,
             out_dir: None,
         }
     }

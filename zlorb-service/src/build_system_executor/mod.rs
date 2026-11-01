@@ -48,6 +48,7 @@ mod tests {
             branch: "master".to_string(),
             build_strategy: build_strategy.map(|s| s.to_string()),
             build_command: build_command.to_string(),
+            restart_command: None,
             out_dir: None,
         }
     }
