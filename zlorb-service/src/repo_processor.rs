@@ -2,15 +2,27 @@ use git2::{
     AnnotatedCommit, Branch, BranchType, Cred, FetchOptions, MergeAnalysis, MergePreference, Oid,
     Reference, Remote, RemoteCallbacks,
 };
-use std::{fmt::Debug, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use zlorb_lib::{config::RepositoryConfiguration, error::ZlorbError, log::Logger};
 
 use crate::build_system_executor::BuildSystemExecutor;
+
+pub type FailedBuilds = Arc<Mutex<HashMap<String, Oid>>>;
+
+pub fn new_failed_builds() -> FailedBuilds {
+    Arc::new(Mutex::new(HashMap::new()))
+}
 
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
     pub config: RepositoryConfiguration,
+    pub failed_builds: FailedBuilds,
 }
 
 impl Debug for RepoProcessor {
@@ -36,6 +48,7 @@ impl RepoProcessor {
             repo_path: PathBuf::from(&config.path),
             repo,
             config,
+            failed_builds: new_failed_builds(),
         })
     }
 
@@ -48,8 +61,31 @@ impl RepoProcessor {
         let out_dir_missing = self.config.out_dir.is_some() && !self.check_if_out_dir_exists()?;
         Logger::info(format!("Out directory missing (expected): {}", out_dir_missing));
 
-        let should_run_build = has_updates || out_dir_missing;
+        let head_oid = self.repo.head().ok().and_then(|head| head.target());
+        let retrying_failed_build = head_oid
+            .map(|oid| self.build_failed_at(oid))
+            .unwrap_or(false);
+        if retrying_failed_build {
+            Logger::error(format!(
+                "Retrying the failed build for {} at {}: the previous build for this commit did not succeed",
+                self.config.name,
+                head_oid.map(|oid| oid.to_string()).unwrap_or_default()
+            ));
+        }
+
+        let should_run_build = has_updates || out_dir_missing || retrying_failed_build;
         Logger::info(format!("Should run build: {}", should_run_build));
+
+        if should_run_build && !has_updates {
+            let tracked_changes = self._tracked_local_changes()?;
+            if !tracked_changes.is_empty() {
+                return Err(ZlorbError::Other(format!(
+                    "Refusing to build {}: local changes to tracked files ({}) are not part of the commit being built. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
+                    self.config.name,
+                    tracked_changes.join(", ")
+                )));
+            }
+        }
 
         match should_run_build {
             true => {
@@ -58,11 +94,47 @@ impl RepoProcessor {
                     self.config.name
                 ));
                 let exec = BuildSystemExecutor { processor: self };
-                exec.run_build()
+                match exec.run_build() {
+                    Ok(()) => {
+                        if let Some(oid) = head_oid {
+                            self.clear_failed_build(oid);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let current_oid =
+                            self.repo.head().ok().and_then(|head| head.target());
+                        if current_oid.is_some() && current_oid == head_oid {
+                            self.record_failed_build(current_oid.unwrap());
+                        }
+                        Err(e)
+                    }
+                }
             }
             false => {
                 Logger::info(format!("No build needed for {}", self.config.name));
                 Ok(())
+            }
+        }
+    }
+
+    fn build_failed_at(&self, oid: Oid) -> bool {
+        match self.failed_builds.lock() {
+            Ok(failed) => failed.get(&self.config.path) == Some(&oid),
+            Err(_) => false,
+        }
+    }
+
+    fn record_failed_build(&self, oid: Oid) {
+        if let Ok(mut failed) = self.failed_builds.lock() {
+            failed.insert(self.config.path.clone(), oid);
+        }
+    }
+
+    fn clear_failed_build(&self, oid: Oid) {
+        if let Ok(mut failed) = self.failed_builds.lock() {
+            if failed.get(&self.config.path) == Some(&oid) {
+                failed.remove(&self.config.path);
             }
         }
     }
@@ -698,6 +770,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn processor_with_tracker(watched: &Path, failed_builds: FailedBuilds) -> RepoProcessor {
+        let mut processor = processor_for(watched);
+        processor.failed_builds = failed_builds;
+        processor
+    }
+
+    fn write_sentinel_fixture_crate(repo_path: &Path, marker: &str) {
+        write_fixture_crate(repo_path, marker);
+        std::fs::write(
+            repo_path.join("build.rs"),
+            "fn main() {\n    let sentinel = std::path::Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"fail-build\");\n    println!(\"cargo:rerun-if-changed=fail-build\");\n    if sentinel.exists() {\n        panic!(\"simulated transient build failure\");\n    }\n}\n",
+        )
+        .unwrap();
+    }
+
     fn processor_with_strategy(watched: &Path, strategy: Option<&str>) -> RepoProcessor {
         RepoProcessor::new(RepositoryConfiguration {
             name: "watched".to_string(),
@@ -810,6 +897,119 @@ mod tests {
                 .contains("fixture-version-two")
         );
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_build_is_retried_on_later_cycles_until_it_succeeds() {
+        let root = temp_dir("failed-build-retry");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        write_sentinel_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        let failed_builds = new_failed_builds();
+        std::fs::write(watched_path.join("fail-build"), "").unwrap();
+
+        let err = processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("Failed to build"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(!fixture_artifact(&watched_path).exists());
+
+        let err = processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("Failed to build"));
+        assert!(!fixture_artifact(&watched_path).exists());
+
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        let err = processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        assert!(!fixture_artifact(&watched_path).exists());
+        write_sentinel_fixture_crate(&watched_path, "fixture-version-two");
+
+        std::fs::remove_file(watched_path.join("fail-build")).unwrap();
+        processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap();
+        let artifact = fixture_artifact(&watched_path);
+        assert!(artifact.exists());
+        let output = std::process::Command::new(&artifact).output().unwrap();
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("fixture-version-two")
+        );
+
+        std::fs::write(watched_path.join("fail-build"), "").unwrap();
+        processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn seeded_failure_for_a_bun_repo_is_retried_and_kept_when_bun_is_missing() {
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+        let bun_path = if user == "root" {
+            PathBuf::from("/root/.bun/bin/bun")
+        } else {
+            PathBuf::from("/home").join(&user).join(".bun/bin/bun")
+        };
+        if bun_path.exists() {
+            return;
+        }
+        let root = temp_dir("bun-retry");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+
+        let failed_builds = new_failed_builds();
+        failed_builds
+            .lock()
+            .unwrap()
+            .insert(watched_path.to_string_lossy().into_owned(), v1);
+        let mut processor = processor_with_strategy(&watched_path, Some("bun"));
+        processor.failed_builds = failed_builds.clone();
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("Bun is not installed"));
+        assert_eq!(
+            failed_builds
+                .lock()
+                .unwrap()
+                .get(&watched_path.to_string_lossy().into_owned()),
+            Some(&v1)
+        );
+        let mut processor = processor_with_strategy(&watched_path, Some("bun"));
+        processor.failed_builds = failed_builds.clone();
+        assert!(processor.update_from_remote().is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
