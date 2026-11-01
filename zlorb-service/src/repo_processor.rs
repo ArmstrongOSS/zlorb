@@ -96,9 +96,7 @@ impl RepoProcessor {
                 let exec = BuildSystemExecutor { processor: self };
                 match exec.run_build() {
                     Ok(()) => {
-                        if let Some(oid) = head_oid {
-                            self.clear_failed_build(oid);
-                        }
+                        self.clear_failed_build();
                         Ok(())
                     }
                     Err(e) => {
@@ -131,11 +129,9 @@ impl RepoProcessor {
         }
     }
 
-    fn clear_failed_build(&self, oid: Oid) {
+    fn clear_failed_build(&self) {
         if let Ok(mut failed) = self.failed_builds.lock() {
-            if failed.get(&self.config.path) == Some(&oid) {
-                failed.remove(&self.config.path);
-            }
+            failed.remove(&self.config.path);
         }
     }
 
@@ -1010,6 +1006,70 @@ mod tests {
         let mut processor = processor_with_strategy(&watched_path, Some("bun"));
         processor.failed_builds = failed_builds.clone();
         assert!(processor.update_from_remote().is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_build_record_is_cleared_when_a_newer_commit_builds() {
+        let root = temp_dir("failed-build-cleared-by-newer");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let v1 = commit_all(&upstream, "v1");
+        write_sentinel_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        let failed_builds = new_failed_builds();
+        std::fs::write(watched_path.join("fail-build"), "").unwrap();
+        assert!(
+            processor_with_tracker(&watched_path, failed_builds.clone())
+                .update_from_remote()
+                .is_err()
+        );
+        assert_eq!(
+            failed_builds
+                .lock()
+                .unwrap()
+                .get(&watched_path.to_string_lossy().into_owned()),
+            Some(&v2)
+        );
+
+        let upstream = git2::Repository::open(&upstream_path).unwrap();
+        write_sentinel_fixture_crate(&upstream_path, "fixture-version-three");
+        let v3 = commit_all(&upstream, "v3");
+        drop(upstream);
+        std::fs::remove_file(watched_path.join("fail-build")).unwrap();
+        processor_with_tracker(&watched_path, failed_builds.clone())
+            .update_from_remote()
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v3);
+        drop(watched);
+        assert!(
+            !failed_builds
+                .lock()
+                .unwrap()
+                .contains_key(&watched_path.to_string_lossy().into_owned()),
+            "a successful build at a newer commit must clear the failure record stored for the older commit"
+        );
+        let artifact = fixture_artifact(&watched_path);
+        let output = std::process::Command::new(&artifact).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("fixture-version-three")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
