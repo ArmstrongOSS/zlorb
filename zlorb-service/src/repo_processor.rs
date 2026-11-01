@@ -117,6 +117,25 @@ fn tracker_clear(tracker: &FailedBuilds, key: &str, label: &str, repo_name: &str
     }
 }
 
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec()))
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
@@ -278,7 +297,7 @@ impl RepoProcessor {
                 return Err(ZlorbError::Other(format!(
                     "Refusing to build {}: local changes to tracked files ({}) are not part of the commit being built. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
                     self.config.name,
-                    tracked_changes.join(", ")
+                    display_paths(&tracked_changes)
                 )));
             }
         }
@@ -354,7 +373,7 @@ impl RepoProcessor {
                 return Err(ZlorbError::Other(format!(
                     "Refusing to run the restart command for {}: local changes to tracked files ({}) are not part of the commit being restarted on. Stash the work, move it to another branch, or discard it — do not commit it on this branch, the daemon can only fast-forward this branch",
                     self.config.name,
-                    tracked_changes.join(", ")
+                    display_paths(&tracked_changes)
                 )));
             }
         }
@@ -494,9 +513,19 @@ impl RepoProcessor {
                 "Fast-forward only!",
             )));
         }
-        self._refuse_if_update_would_overwrite(&fetch_commit)?;
+        let changed_paths = match self._changed_paths(local_oid, fetch_commit.id()) {
+            Ok(paths) => Some(paths),
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not compute the paths changed by the update for {}; falling back to refusing on any local change and checking out the whole tree: {}",
+                    self.config.name, e
+                ));
+                None
+            }
+        };
+        self._refuse_if_update_would_overwrite(&fetch_commit, changed_paths.as_deref())?;
         let fetch_oid = fetch_commit.id();
-        let remote_ref = match self._apply_fast_forward(fetch_commit) {
+        let remote_ref = match self._apply_fast_forward(fetch_commit, changed_paths.as_deref()) {
             Ok(remote_ref) => remote_ref,
             Err(e) => {
                 self._rollback_fast_forward(local_oid, fetch_oid);
@@ -510,8 +539,16 @@ impl RepoProcessor {
     fn _refuse_if_update_would_overwrite(
         &self,
         fetch_commit: &AnnotatedCommit,
+        changed_paths: Option<&[PathBuf]>,
     ) -> Result<(), ZlorbError> {
         let tracked_changes = self._tracked_local_changes()?;
+        let tracked_changes: Vec<PathBuf> = match changed_paths {
+            Some(paths) => tracked_changes
+                .into_iter()
+                .filter(|change| paths.contains(change))
+                .collect(),
+            None => tracked_changes,
+        };
         let untracked_collisions = self._untracked_collisions(fetch_commit)?;
         if tracked_changes.is_empty() && untracked_collisions.is_empty() {
             return Ok(());
@@ -520,7 +557,7 @@ impl RepoProcessor {
         if !tracked_changes.is_empty() {
             reasons.push(format!(
                 "local changes to tracked files ({})",
-                tracked_changes.join(", ")
+                display_paths(&tracked_changes)
             ));
         }
         if !untracked_collisions.is_empty() {
@@ -582,7 +619,7 @@ impl RepoProcessor {
         Ok(collisions)
     }
 
-    fn _tracked_local_changes(&self) -> Result<Vec<String>, ZlorbError> {
+    fn _tracked_local_changes(&self) -> Result<Vec<PathBuf>, ZlorbError> {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(false);
         opts.include_ignored(false);
@@ -592,16 +629,49 @@ impl RepoProcessor {
             .map_err(ZlorbError::Git)?;
         Ok(statuses
             .iter()
-            .map(|entry| String::from_utf8_lossy(entry.path_bytes()).into_owned())
+            .map(|entry| path_from_bytes(entry.path_bytes()))
             .collect())
     }
 
     fn _apply_fast_forward(
         &self,
         fetch_commit: AnnotatedCommit,
+        changed_paths: Option<&[PathBuf]>,
     ) -> Result<Reference<'_>, ZlorbError> {
         self._setup_repo_for_checkout(fetch_commit)?;
-        self._checkout_and_get_ref()
+        self._checkout_and_get_ref(changed_paths)
+    }
+
+    fn _changed_paths(&self, from: Oid, to: Oid) -> Result<Vec<PathBuf>, ZlorbError> {
+        let from_tree = self
+            .repo
+            .find_commit(from)
+            .map_err(ZlorbError::Git)?
+            .tree()
+            .map_err(ZlorbError::Git)?;
+        let to_tree = self
+            .repo
+            .find_commit(to)
+            .map_err(ZlorbError::Git)?
+            .tree()
+            .map_err(ZlorbError::Git)?;
+        let diff = self
+            .repo
+            .diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)
+            .map_err(ZlorbError::Git)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for delta in diff.deltas() {
+            for file in [delta.old_file(), delta.new_file()] {
+                if let Some(path) = file.path() {
+                    let path = path.to_path_buf();
+                    if seen.insert(path.clone()) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+        Ok(paths)
     }
 
     fn _rollback_fast_forward(&self, local_oid: Oid, fetch_oid: Oid) -> bool {
@@ -627,24 +697,38 @@ impl RepoProcessor {
             }
         }
         self._remove_partial_update_files(local_oid, fetch_oid);
+        let changed_paths = match self._changed_paths(local_oid, fetch_oid) {
+            Ok(paths) => Some(paths),
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not compute the paths changed by the update for {}; rolling back with a whole-tree restore, which may discard local changes outside the update: {}",
+                    self.config.name, e
+                ));
+                None
+            }
+        };
         let mut tree_restored = false;
-        match self.repo.find_commit(local_oid) {
+        let restore_result = match self.repo.find_commit(local_oid) {
             Ok(commit) => {
-                let mut checkout = git2::build::CheckoutBuilder::default();
-                checkout.force();
-                match self
-                    .repo
-                    .checkout_tree(commit.as_object(), Some(&mut checkout))
-                {
-                    Ok(_) => tree_restored = true,
-                    Err(e) => {
-                        Logger::error(format!(
-                            "Failed to restore the working tree after a failed fast-forward: {}",
-                            e
-                        ));
+                if matches!(&changed_paths, Some(paths) if paths.is_empty()) {
+                    Ok(())
+                } else {
+                    let mut checkout = git2::build::CheckoutBuilder::default();
+                    checkout.force();
+                    checkout.disable_pathspec_match(true);
+                    if let Some(paths) = &changed_paths {
+                        for path in paths {
+                            checkout.path(path);
+                        }
                     }
+                    self.repo
+                        .checkout_tree(commit.as_object(), Some(&mut checkout))
                 }
             }
+            Err(e) => Err(e),
+        };
+        match restore_result {
+            Ok(_) => tree_restored = true,
             Err(e) => {
                 Logger::error(format!(
                     "Failed to restore the working tree after a failed fast-forward: {}",
@@ -874,12 +958,24 @@ impl RepoProcessor {
         Ok(())
     }
 
-    fn _checkout_and_get_ref(&self) -> Result<Reference<'_>, ZlorbError> {
-        let mut checkout = git2::build::CheckoutBuilder::default();
-        checkout.force();
-        self.repo
-            .checkout_head(Some(&mut checkout))
-            .map_err(ZlorbError::Git)?;
+    fn _checkout_and_get_ref(
+        &self,
+        changed_paths: Option<&[PathBuf]>,
+    ) -> Result<Reference<'_>, ZlorbError> {
+        let skip_checkout = matches!(changed_paths, Some(paths) if paths.is_empty());
+        if !skip_checkout {
+            let mut checkout = git2::build::CheckoutBuilder::default();
+            checkout.force();
+            checkout.disable_pathspec_match(true);
+            if let Some(paths) = changed_paths {
+                for path in paths {
+                    checkout.path(path);
+                }
+            }
+            self.repo
+                .checkout_head(Some(&mut checkout))
+                .map_err(ZlorbError::Git)?;
+        }
 
         let remote_ref = self
             .repo
@@ -1154,6 +1250,224 @@ mod tests {
                 .contains("fixture-version-two")
         );
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wip_on_a_file_the_update_does_not_touch_survives_fast_forward() {
+        let root = temp_dir("wip-untouched-survives");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join("keep.txt"), "committed base\n").unwrap();
+        std::fs::write(upstream_path.join("old.txt"), "old file\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        std::fs::remove_file(upstream_path.join("old.txt")).unwrap();
+        std::fs::write(upstream_path.join("new.txt"), "new file\n").unwrap();
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join("keep.txt"), "standing wip\n").unwrap();
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-two")
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("new.txt")).unwrap(),
+            "new file\n"
+        );
+        assert!(!watched_path.join("old.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("keep.txt")).unwrap(),
+            "standing wip\n"
+        );
+        let artifact = fixture_artifact(&watched_path);
+        assert!(artifact.exists());
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let statuses = watched.statuses(None).unwrap();
+        let tracked_dirty: Vec<(String, git2::Status)> = statuses
+            .iter()
+            .filter(|entry| entry.status() != git2::Status::WT_NEW)
+            .map(|entry| {
+                (
+                    String::from_utf8_lossy(entry.path_bytes()).into_owned(),
+                    entry.status(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            tracked_dirty,
+            vec![("keep.txt".to_string(), git2::Status::WT_MODIFIED)]
+        );
+        drop(statuses);
+        drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rollback_preserves_wip_on_a_file_the_update_does_not_touch() {
+        let root = temp_dir("rollback-wip-untouched");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let watched = git2::Repository::init_opts(&watched_path, &init_opts).unwrap();
+        write_fixture_crate(&watched_path, "fixture-version-one");
+        std::fs::write(watched_path.join("keep.txt"), "committed base\n").unwrap();
+        std::fs::write(watched_path.join("only-v1.txt"), "only in v1\n").unwrap();
+        let v1 = commit_all(&watched, "v1");
+        write_fixture_crate(&watched_path, "fixture-version-two");
+        std::fs::remove_file(watched_path.join("only-v1.txt")).unwrap();
+        std::fs::write(watched_path.join("new.txt"), "new in v2\n").unwrap();
+        let v2 = commit_all(&watched, "v2");
+        drop(watched);
+        std::fs::write(watched_path.join("keep.txt"), "standing wip\n").unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._rollback_fast_forward(v1, v2));
+        assert_eq!(head_oid(&processor.repo), v1);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-one")
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("keep.txt")).unwrap(),
+            "standing wip\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("only-v1.txt")).unwrap(),
+            "only in v1\n"
+        );
+        assert!(!watched_path.join("new.txt").exists());
+        drop(processor);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glob_characters_in_a_changed_filename_do_not_expand_to_sibling_files() {
+        let root = temp_dir("glob-filename");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join("data[1].txt"), "glob one\n").unwrap();
+        std::fs::write(upstream_path.join("data1.txt"), "sibling base\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::write(upstream_path.join("data[1].txt"), "glob two\n").unwrap();
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join("data1.txt"), "sibling wip\n").unwrap();
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("data[1].txt")).unwrap(),
+            "glob two\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("data1.txt")).unwrap(),
+            "sibling wip\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    fn commit_all_no_delete(repo: &git2::Repository, message: &str) -> Oid {
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = Signature::now("zlorb-test", "zlorb-test@example.com").unwrap();
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|head| head.target())
+            .map(|oid| repo.find_commit(oid).unwrap());
+        match parent {
+            Some(parent) => repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])
+                .unwrap(),
+            None => repo
+                .commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+                .unwrap(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_filename_in_the_update_still_refuses_when_dirty() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = temp_dir("non-utf8-guard");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        let bad_name = std::ffi::OsString::from_vec(b"bad-\xff.txt".to_vec());
+        std::fs::write(upstream_path.join(&bad_name), "version one\n").unwrap();
+        let v1 = commit_all_no_delete(&upstream, "v1");
+        std::fs::write(upstream_path.join(&bad_name), "version two\n").unwrap();
+        commit_all_no_delete(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join(&bad_name), "local wip\n").unwrap();
+
+        let err = processor_for(&watched_path)
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read(watched_path.join(&bad_name)).unwrap(),
+            b"local wip\n"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
