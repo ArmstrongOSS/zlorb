@@ -33,6 +33,7 @@ impl RepositoryConfiguration {
     }
 
     pub fn resolved_build_strategy(&self) -> Result<BuildStrategyKind, ZlorbError> {
+        let accepted = "\"bun\", \"rust\", or \"cargo\" (alias for \"rust\")";
         if let Some(raw) = &self.build_strategy {
             let value = raw.trim().to_lowercase();
             if !value.is_empty() {
@@ -40,22 +41,25 @@ impl RepositoryConfiguration {
                     "bun" => Ok(BuildStrategyKind::Bun),
                     "rust" | "cargo" => Ok(BuildStrategyKind::Rust),
                     _ => Err(ZlorbError::InvalidConfig(format!(
-                        "repo '{}' has unknown build_strategy '{}'; expected \"bun\" or \"rust\"",
-                        self.name, raw
+                        "repo '{}' has unknown build_strategy '{}'; expected {}",
+                        self.name, raw, accepted
                     ))),
                 };
             }
         }
-        match self.build_command.trim() {
+        let legacy = self.build_command.trim().to_lowercase();
+        match legacy.as_str() {
             "bun" => Ok(BuildStrategyKind::Bun),
             "cargo" | "cargo build" => Ok(BuildStrategyKind::Rust),
             "" => Err(ZlorbError::InvalidConfig(format!(
-                "repo '{}' has no build_strategy; set build_strategy = \"bun\" or \"rust\" in repositories.toml",
-                self.name
+                "repo '{}' has no build_strategy; set build_strategy to {} in repositories.toml",
+                self.name, accepted
             ))),
-            other => Err(ZlorbError::InvalidConfig(format!(
-                "repo '{}' has no build_strategy and its legacy build_command '{}' does not name a strategy; set build_strategy = \"bun\" or \"rust\" in repositories.toml",
-                self.name, other
+            _ => Err(ZlorbError::InvalidConfig(format!(
+                "repo '{}' has no build_strategy and its legacy build_command '{}' does not name a strategy; set build_strategy to {} in repositories.toml",
+                self.name,
+                self.build_command.trim(),
+                accepted
             ))),
         }
     }
@@ -125,6 +129,55 @@ mod tests {
             .unwrap_err();
         assert!(format!("{:?}", err).contains("webpack"));
         assert!(format!("{:?}", err).contains("demo"));
+    }
+
+    #[test]
+    fn strategy_error_messages_list_the_full_accepted_set() {
+        for err in [
+            config(Some("webpack"), "").resolved_build_strategy().unwrap_err(),
+            config(None, "").resolved_build_strategy().unwrap_err(),
+            config(None, "bunny").resolved_build_strategy().unwrap_err(),
+        ] {
+            let ZlorbError::InvalidConfig(message) = err else {
+                panic!("expected InvalidConfig, got {:?}", err);
+            };
+            assert!(message.contains("\"bun\""), "missing bun in: {}", message);
+            assert!(message.contains("\"rust\""), "missing rust in: {}", message);
+            assert!(message.contains("\"cargo\""), "missing cargo in: {}", message);
+            assert!(
+                message.contains("alias for \"rust\""),
+                "cargo is not named as the rust alias in: {}",
+                message
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_strategy_is_case_insensitive() {
+        assert_eq!(
+            config(Some(" BUN "), "").resolved_build_strategy().unwrap(),
+            BuildStrategyKind::Bun
+        );
+        assert_eq!(
+            config(Some("Cargo"), "").resolved_build_strategy().unwrap(),
+            BuildStrategyKind::Rust
+        );
+    }
+
+    #[test]
+    fn legacy_commands_follow_the_same_case_rule_as_explicit_strategies() {
+        assert_eq!(
+            config(None, "BUN").resolved_build_strategy().unwrap(),
+            BuildStrategyKind::Bun
+        );
+        assert_eq!(
+            config(None, "Cargo").resolved_build_strategy().unwrap(),
+            BuildStrategyKind::Rust
+        );
+        assert_eq!(
+            config(None, "  Cargo Build  ").resolved_build_strategy().unwrap(),
+            BuildStrategyKind::Rust
+        );
     }
 
     #[test]
