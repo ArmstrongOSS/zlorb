@@ -136,6 +136,59 @@ fn display_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+fn directory_is_tracked_typechange(
+    head_paths: &std::collections::HashSet<Vec<u8>>,
+    workdir: &Path,
+    prefix: &Path,
+) -> bool {
+    #[cfg(unix)]
+    let mut dir_prefix = {
+        use std::os::unix::ffi::OsStrExt;
+        prefix.as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(not(unix))]
+    let mut dir_prefix = prefix.to_string_lossy().into_owned().into_bytes();
+    dir_prefix.push(b'/');
+    if !head_paths.iter().any(|path| path.starts_with(&dir_prefix)) {
+        return false;
+    }
+    let mut stack = vec![workdir.join(prefix)];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return false;
+        };
+        for entry in entries {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            let Ok(file_type) = entry.file_type() else {
+                return false;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let entry_path = entry.path();
+            let Ok(relative) = entry_path.strip_prefix(workdir) else {
+                return false;
+            };
+            #[cfg(unix)]
+            let relative_bytes = {
+                use std::os::unix::ffi::OsStrExt;
+                relative.as_os_str().as_bytes()
+            };
+            #[cfg(not(unix))]
+            let relative_owned = relative.to_string_lossy().into_owned().into_bytes();
+            #[cfg(not(unix))]
+            let relative_bytes = relative_owned.as_slice();
+            if !head_paths.contains(relative_bytes) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
@@ -586,6 +639,35 @@ impl RepoProcessor {
             .find_commit(fetch_commit.id())
             .map_err(ZlorbError::Git)?;
         let tree = commit.tree().map_err(ZlorbError::Git)?;
+        let mut head_paths: std::collections::HashSet<Vec<u8>> =
+            std::collections::HashSet::new();
+        if let Ok(head) = self.repo.head() {
+            if let Ok(head_commit) = head.peel_to_commit() {
+                if let Ok(head_tree) = head_commit.tree() {
+                    let _ = head_tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
+                        if matches!(
+                            entry.kind(),
+                            Some(git2::ObjectType::Blob) | Some(git2::ObjectType::Commit)
+                        ) {
+                            let path =
+                                PathBuf::from(root).join(entry.name().unwrap_or_default());
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::ffi::OsStrExt;
+                                head_paths
+                                    .insert(path.as_os_str().as_bytes().to_vec());
+                            }
+                            #[cfg(not(unix))]
+                            head_paths.insert(
+                                path.to_string_lossy().into_owned().into_bytes(),
+                            );
+                        }
+                        git2::TreeWalkResult::Ok
+                    });
+                }
+            }
+        }
+        let mut typechange_cache: HashMap<PathBuf, bool> = HashMap::new();
         let mut collisions: Vec<String> = Vec::new();
         tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
             if matches!(
@@ -605,6 +687,15 @@ impl RepoProcessor {
                     if (is_full_path || blocks_descent)
                         && index.get_path(&prefix, 0).is_none()
                     {
+                        let tracked_typechange = metadata.is_dir()
+                            && *typechange_cache.entry(prefix.clone()).or_insert_with(|| {
+                                directory_is_tracked_typechange(
+                                    &head_paths, &workdir, &prefix,
+                                )
+                            });
+                        if tracked_typechange {
+                            break;
+                        }
                         let label = prefix.to_string_lossy().into_owned();
                         if !collisions.contains(&label) {
                             collisions.push(label);
@@ -1517,6 +1608,238 @@ mod tests {
             "from remote\n"
         );
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_to_file_typechange_fast_forwards_on_clean_tree() {
+        let root = temp_dir("dir-to-file-typechange");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::create_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing/inner.txt"), "inner\n").unwrap();
+        std::fs::write(upstream_path.join("thing/other.txt"), "other\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing"), "now a file\n").unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        assert!(watched_path.join("thing").is_dir());
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(watched_path.join("thing").is_file());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("thing")).unwrap(),
+            "now a file\n"
+        );
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-two")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn untracked_file_inside_tracked_directory_still_refuses_typechange() {
+        let root = temp_dir("dir-to-file-untracked-inside");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::create_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing/inner.txt"), "inner\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing"), "now a file\n").unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join("thing/stray.txt"), "untracked\n").unwrap();
+
+        let err = processor_for(&watched_path)
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("untracked files in the way"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("thing/stray.txt")).unwrap(),
+            "untracked\n"
+        );
+
+        std::fs::remove_file(watched_path.join("thing/stray.txt")).unwrap();
+        processor_for(&watched_path).update_from_remote().unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(watched_path.join("thing").is_file());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn staged_addition_inside_tracked_directory_still_refuses_typechange() {
+        let root = temp_dir("dir-to-file-staged-inside");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::create_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing/inner.txt"), "inner\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing"), "now a file\n").unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join("thing/staged.txt"), "staged\n").unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let mut index = watched.index().unwrap();
+        index
+            .add_path(Path::new("thing/staged.txt"))
+            .unwrap();
+        index.write().unwrap();
+        drop(index);
+        drop(watched);
+
+        let err = processor_for(&watched_path)
+            .update_from_remote()
+            .unwrap_err();
+        assert!(format!("{:?}", err).contains("untracked files in the way"));
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("thing/staged.txt")).unwrap(),
+            "staged\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_to_file_typechange_with_empty_subdirectory_fast_forwards() {
+        let root = temp_dir("dir-to-file-empty-subdir");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::create_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing/inner.txt"), "inner\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_dir_all(upstream_path.join("thing")).unwrap();
+        std::fs::write(upstream_path.join("thing"), "now a file\n").unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::create_dir_all(watched_path.join("thing/empty")).unwrap();
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(watched_path.join("thing").is_file());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("thing")).unwrap(),
+            "now a file\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_directory_to_file_typechange_fast_forwards() {
+        let root = temp_dir("nested-dir-to-file");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::create_dir_all(upstream_path.join("a/b")).unwrap();
+        std::fs::write(upstream_path.join("a/b/inner.txt"), "inner\n").unwrap();
+        std::fs::write(upstream_path.join("a/keep.txt"), "keep\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_dir_all(upstream_path.join("a/b")).unwrap();
+        std::fs::write(upstream_path.join("a/b"), "now a file\n").unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(watched_path.join("a/b").is_file());
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("a/b")).unwrap(),
+            "now a file\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("a/keep.txt")).unwrap(),
+            "keep\n"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
