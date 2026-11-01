@@ -25,6 +25,76 @@ pub fn new_failed_restarts() -> FailedRestarts {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+pub fn tracker_key(raw_path: &str) -> String {
+    match std::fs::canonicalize(raw_path) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(_) => normalize_path_lexically(raw_path),
+    }
+}
+
+fn normalize_path_lexically(raw_path: &str) -> String {
+    let path = Path::new(raw_path);
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !normalized.pop() && !path.is_absolute() {
+                    normalized.push(component);
+                }
+            }
+            other => normalized.push(other),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return ".".to_string();
+    }
+    normalized.to_string_lossy().into_owned()
+}
+
+fn tracker_failed_at(
+    tracker: &FailedBuilds,
+    key: &str,
+    oid: Oid,
+    label: &str,
+    repo_name: &str,
+) -> bool {
+    match tracker.lock() {
+        Ok(failed) => failed.get(key) == Some(&oid),
+        Err(e) => {
+            Logger::error(format!(
+                "The {} tracker lock is poisoned for {}; treating the commit as not failed and skipping retries until the daemon restarts: {}",
+                label, repo_name, e
+            ));
+            false
+        }
+    }
+}
+
+fn tracker_record(tracker: &FailedBuilds, key: &str, oid: Oid, label: &str, repo_name: &str) {
+    match tracker.lock() {
+        Ok(mut failed) => {
+            failed.insert(key.to_string(), oid);
+        }
+        Err(e) => Logger::error(format!(
+            "The {} tracker lock is poisoned for {}; the failure at {} was not recorded and will not be retried: {}",
+            label, repo_name, oid, e
+        )),
+    }
+}
+
+fn tracker_clear(tracker: &FailedBuilds, key: &str, label: &str, repo_name: &str) {
+    match tracker.lock() {
+        Ok(mut failed) => {
+            failed.remove(key);
+        }
+        Err(e) => Logger::error(format!(
+            "The {} tracker lock is poisoned for {}; the stored failure was not cleared: {}",
+            label, repo_name, e
+        )),
+    }
+}
+
 pub struct RepoProcessor {
     pub(crate) repo_path: PathBuf,
     pub repo: git2::Repository,
@@ -155,14 +225,14 @@ impl RepoProcessor {
     pub fn update_from_remote(&self) -> Result<(), ZlorbError> {
         Logger::info(format!("Updating from remote for {}", self.config.name));
         self.config.resolved_build_strategy()?;
-        let head_before = self.repo.head().ok().and_then(|head| head.target());
+        let head_before = self.head_oid("before fetch");
         let has_updates = self.fetch_remote_updates()?;
         Logger::info(format!("Remote updates found: {}", has_updates));
 
         let out_dir_missing = self.config.out_dir.is_some() && !self.check_if_out_dir_exists()?;
         Logger::info(format!("Out directory missing (expected): {}", out_dir_missing));
 
-        let head_oid = self.repo.head().ok().and_then(|head| head.target());
+        let head_oid = self.head_oid("after fetch");
         let retrying_failed_build = head_oid
             .map(|oid| self.build_failed_at(oid))
             .unwrap_or(false);
@@ -201,10 +271,18 @@ impl RepoProcessor {
                         Ok(())
                     }
                     Err(e) => {
-                        let current_oid =
-                            self.repo.head().ok().and_then(|head| head.target());
-                        if current_oid.is_some() && current_oid == head_oid {
-                            self.record_failed_build(current_oid.unwrap());
+                        match self.head_oid("after a failed build") {
+                            Some(oid) if Some(oid) == head_oid => {
+                                self.record_failed_build(oid);
+                            }
+                            Some(oid) => Logger::error(format!(
+                                "Not recording the failed build for {}: HEAD moved to {} during the build, so the failure cannot be attributed to the commit that was current before it",
+                                self.config.name, oid
+                            )),
+                            None => Logger::error(format!(
+                                "Not recording the failed build for {}: HEAD could not be read after the build failed, so the failure will not be retried",
+                                self.config.name
+                            )),
                         }
                         Err(e)
                     }
@@ -229,7 +307,7 @@ impl RepoProcessor {
         let Some(command) = self.config.resolved_restart_command() else {
             return Ok(());
         };
-        let current_oid = self.repo.head().ok().and_then(|head| head.target());
+        let current_oid = self.head_oid("before the restart check");
         let head_changed = current_oid.is_some() && current_oid != head_before;
         let retrying_failed_restart = current_oid
             .map(|oid| self.restart_failed_at(oid))
@@ -261,50 +339,96 @@ impl RepoProcessor {
                 Ok(())
             }
             Err(e) => {
-                if let Some(oid) = current_oid {
-                    self.record_failed_restart(oid);
+                match current_oid {
+                    Some(oid) => self.record_failed_restart(oid),
+                    None => Logger::error(format!(
+                        "Not recording the failed restart for {}: HEAD could not be read after the restart failed, so the failure will not be retried",
+                        self.config.name
+                    )),
                 }
                 Err(e)
             }
         }
     }
 
-    fn restart_failed_at(&self, oid: Oid) -> bool {
-        match self.failed_restarts.lock() {
-            Ok(failed) => failed.get(&self.config.path) == Some(&oid),
-            Err(_) => false,
+    fn head_oid(&self, context: &str) -> Option<Oid> {
+        match self.repo.head() {
+            Ok(head) => match head.target() {
+                Some(oid) => Some(oid),
+                None => {
+                    Logger::error(format!(
+                        "Could not read HEAD for {} ({}): HEAD has no target, so failed-build and failed-restart tracking is skipped for this read",
+                        self.config.name, context
+                    ));
+                    None
+                }
+            },
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not read HEAD for {} ({}): {}, so failed-build and failed-restart tracking is skipped for this read",
+                    self.config.name, context, e
+                ));
+                None
+            }
         }
+    }
+
+    fn restart_failed_at(&self, oid: Oid) -> bool {
+        tracker_failed_at(
+            &self.failed_restarts,
+            &tracker_key(&self.config.path),
+            oid,
+            "failed-restart",
+            &self.config.name,
+        )
     }
 
     fn record_failed_restart(&self, oid: Oid) {
-        if let Ok(mut failed) = self.failed_restarts.lock() {
-            failed.insert(self.config.path.clone(), oid);
-        }
+        tracker_record(
+            &self.failed_restarts,
+            &tracker_key(&self.config.path),
+            oid,
+            "failed-restart",
+            &self.config.name,
+        );
     }
 
     fn clear_failed_restart(&self) {
-        if let Ok(mut failed) = self.failed_restarts.lock() {
-            failed.remove(&self.config.path);
-        }
+        tracker_clear(
+            &self.failed_restarts,
+            &tracker_key(&self.config.path),
+            "failed-restart",
+            &self.config.name,
+        );
     }
 
     fn build_failed_at(&self, oid: Oid) -> bool {
-        match self.failed_builds.lock() {
-            Ok(failed) => failed.get(&self.config.path) == Some(&oid),
-            Err(_) => false,
-        }
+        tracker_failed_at(
+            &self.failed_builds,
+            &tracker_key(&self.config.path),
+            oid,
+            "failed-build",
+            &self.config.name,
+        )
     }
 
     fn record_failed_build(&self, oid: Oid) {
-        if let Ok(mut failed) = self.failed_builds.lock() {
-            failed.insert(self.config.path.clone(), oid);
-        }
+        tracker_record(
+            &self.failed_builds,
+            &tracker_key(&self.config.path),
+            oid,
+            "failed-build",
+            &self.config.name,
+        );
     }
 
     fn clear_failed_build(&self) {
-        if let Ok(mut failed) = self.failed_builds.lock() {
-            failed.remove(&self.config.path);
-        }
+        tracker_clear(
+            &self.failed_builds,
+            &tracker_key(&self.config.path),
+            "failed-build",
+            &self.config.name,
+        );
     }
 
     fn check_if_out_dir_exists(&self) -> Result<bool, ZlorbError> {
@@ -1165,7 +1289,7 @@ mod tests {
         failed_builds
             .lock()
             .unwrap()
-            .insert(watched_path.to_string_lossy().into_owned(), v1);
+            .insert(tracker_key(&watched_path.to_string_lossy()), v1);
         let mut processor = processor_with_strategy(&watched_path, Some("bun"));
         processor.failed_builds = failed_builds.clone();
         let err = processor.update_from_remote().unwrap_err();
@@ -1174,7 +1298,7 @@ mod tests {
             failed_builds
                 .lock()
                 .unwrap()
-                .get(&watched_path.to_string_lossy().into_owned()),
+                .get(&tracker_key(&watched_path.to_string_lossy())),
             Some(&v1)
         );
         let mut processor = processor_with_strategy(&watched_path, Some("bun"));
@@ -1217,7 +1341,7 @@ mod tests {
             failed_builds
                 .lock()
                 .unwrap()
-                .get(&watched_path.to_string_lossy().into_owned()),
+                .get(&tracker_key(&watched_path.to_string_lossy())),
             Some(&v2)
         );
 
@@ -1236,13 +1360,145 @@ mod tests {
             !failed_builds
                 .lock()
                 .unwrap()
-                .contains_key(&watched_path.to_string_lossy().into_owned()),
+                .contains_key(&tracker_key(&watched_path.to_string_lossy())),
             "a successful build at a newer commit must clear the failure record stored for the older commit"
         );
         let artifact = fixture_artifact(&watched_path);
         let output = std::process::Command::new(&artifact).output().unwrap();
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("fixture-version-three")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn processor_with_path_str(
+        path: String,
+        failed_builds: FailedBuilds,
+        failed_restarts: FailedRestarts,
+    ) -> RepoProcessor {
+        let mut processor = RepoProcessor::new(RepositoryConfiguration {
+            name: "watched".to_string(),
+            path,
+            remote: "origin".to_string(),
+            branch: "master".to_string(),
+            build_strategy: Some("rust".to_string()),
+            build_command: String::new(),
+            restart_command: None,
+            out_dir: None,
+        })
+        .unwrap();
+        processor.failed_builds = failed_builds;
+        processor.failed_restarts = failed_restarts;
+        processor
+    }
+
+    #[test]
+    fn tracker_key_collapses_spelling_variants_of_the_same_repo() {
+        let root = temp_dir("tracker-key");
+        let repo_path = root.join("repo");
+        std::fs::create_dir_all(repo_path.join("sub")).unwrap();
+        let real = repo_path.to_string_lossy().into_owned();
+        let key = tracker_key(&real);
+        assert_eq!(tracker_key(&format!("{}/", real)), key);
+        assert_eq!(tracker_key(&format!("{}/./", real)), key);
+        assert_eq!(
+            tracker_key(&repo_path.join("sub").join("..").to_string_lossy()),
+            key
+        );
+        assert_eq!(tracker_key("/nope/a/./b/../c"), "/nope/a/c");
+        assert_eq!(tracker_key("a/./b/../c"), "a/c");
+        assert_eq!(tracker_key("/../a"), "/a");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracker_key_resolves_symlinks_to_the_same_repo() {
+        let root = temp_dir("tracker-key-symlink");
+        let repo_path = root.join("repo");
+        std::fs::create_dir_all(&repo_path).unwrap();
+        let link_path = root.join("link");
+        std::os::unix::fs::symlink(&repo_path, &link_path).unwrap();
+        assert_eq!(
+            tracker_key(&link_path.to_string_lossy()),
+            tracker_key(&repo_path.to_string_lossy())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_trackers_survive_a_path_spelling_edit() {
+        let root = temp_dir("tracker-spelling");
+        let repo_path = root.join("repo");
+        git2::Repository::init(&repo_path).unwrap();
+        let real = repo_path.to_string_lossy().into_owned();
+        let failed_builds = new_failed_builds();
+        let failed_restarts = new_failed_restarts();
+        let oid = Oid::from_str("1111111111111111111111111111111111111111").unwrap();
+
+        let plain = processor_with_path_str(
+            real.clone(),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        plain.record_failed_build(oid);
+        plain.record_failed_restart(oid);
+
+        let respelled = processor_with_path_str(
+            format!("{}/./", real),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        assert!(respelled.build_failed_at(oid));
+        assert!(respelled.restart_failed_at(oid));
+
+        let trailing = processor_with_path_str(
+            format!("{}/", real),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        trailing.clear_failed_build();
+        trailing.clear_failed_restart();
+        assert!(!plain.build_failed_at(oid));
+        assert!(!plain.restart_failed_at(oid));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn poisoned_trackers_degrade_without_panicking() {
+        let root = temp_dir("tracker-poisoned");
+        let repo_path = root.join("repo");
+        git2::Repository::init(&repo_path).unwrap();
+        let failed_builds = new_failed_builds();
+        let failed_restarts = new_failed_restarts();
+        for tracker in [&failed_builds, &failed_restarts] {
+            let cloned = tracker.clone();
+            let handle = std::thread::spawn(move || {
+                let _guard = cloned.lock().unwrap();
+                panic!("poison the tracker lock");
+            });
+            assert!(handle.join().is_err());
+            assert!(tracker.lock().is_err());
+        }
+        let processor = processor_with_path_str(
+            repo_path.to_string_lossy().into_owned(),
+            failed_builds.clone(),
+            failed_restarts.clone(),
+        );
+        let oid = Oid::from_str("2222222222222222222222222222222222222222").unwrap();
+        assert!(!processor.build_failed_at(oid));
+        assert!(!processor.restart_failed_at(oid));
+        processor.record_failed_build(oid);
+        processor.record_failed_restart(oid);
+        processor.clear_failed_build();
+        processor.clear_failed_restart();
+        assert!(
+            failed_builds
+                .lock()
+                .unwrap_err()
+                .into_inner()
+                .get(&tracker_key(&repo_path.to_string_lossy()))
+                .is_none()
         );
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1402,7 +1658,7 @@ mod tests {
             failed_restarts
                 .lock()
                 .unwrap()
-                .get(&watched_path.to_string_lossy().into_owned()),
+                .get(&tracker_key(&watched_path.to_string_lossy())),
             Some(&v2)
         );
 
@@ -1444,7 +1700,7 @@ mod tests {
             !failed_restarts
                 .lock()
                 .unwrap()
-                .contains_key(&watched_path.to_string_lossy().into_owned())
+                .contains_key(&tracker_key(&watched_path.to_string_lossy()))
         );
         let _ = std::fs::remove_dir_all(&root);
     }
