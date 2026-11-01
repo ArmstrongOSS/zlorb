@@ -691,10 +691,150 @@ impl RepoProcessor {
             .repo
             .statuses(Some(&mut opts))
             .map_err(ZlorbError::Git)?;
-        Ok(statuses
+        let mut changes: Vec<PathBuf> = statuses
             .iter()
             .map(|entry| path_from_bytes(entry.path_bytes()))
-            .collect())
+            .collect();
+        changes.extend(self._hidden_local_changes(&changes));
+        Ok(changes)
+    }
+
+    fn _hidden_local_changes(&self, known: &[PathBuf]) -> Vec<PathBuf> {
+        let Some(workdir) = self.repo.workdir().map(|path| path.to_path_buf()) else {
+            return Vec::new();
+        };
+        let index = match self.repo.index() {
+            Ok(index) => index,
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not read the index for {}; local changes under skip-worktree or assume-unchanged cannot be checked this cycle and would not be reported: {}",
+                    self.config.name, e
+                ));
+                return Vec::new();
+            }
+        };
+        let file_mode = self
+            .repo
+            .config()
+            .and_then(|config| config.get_bool("core.fileMode"))
+            .unwrap_or(true);
+        let mut hidden = Vec::new();
+        for entry in index.iter() {
+            if entry.flags & 0x3000 != 0 {
+                continue;
+            }
+            let skip_worktree =
+                git2::IndexEntryExtendedFlag::from_bits_truncate(entry.flags_extended)
+                    .is_skip_worktree();
+            let assume_unchanged =
+                git2::IndexEntryFlag::from_bits_truncate(entry.flags).is_valid();
+            if !skip_worktree && !assume_unchanged {
+                continue;
+            }
+            let path = path_from_bytes(&entry.path);
+            if known.contains(&path) || hidden.contains(&path) {
+                continue;
+            }
+            let full_path = workdir.join(&path);
+            let metadata = match std::fs::symlink_metadata(&full_path) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    if assume_unchanged {
+                        hidden.push(path);
+                    }
+                    continue;
+                }
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                let Ok(target) = std::fs::read_link(&full_path) else {
+                    continue;
+                };
+                let target_bytes = {
+                    use std::os::unix::ffi::OsStrExt;
+                    target.as_os_str().as_bytes().to_vec()
+                };
+                let Ok(disk_id) = Oid::hash_object(git2::ObjectType::Blob, &target_bytes)
+                else {
+                    continue;
+                };
+                if disk_id != entry.id {
+                    hidden.push(path);
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                if matches!(entry.mode, 0o100644 | 0o100755 | 0o120000) {
+                    hidden.push(path);
+                }
+                continue;
+            }
+            if file_mode && matches!(entry.mode, 0o100644 | 0o100755) {
+                use std::os::unix::fs::PermissionsExt;
+                let workdir_mode = if metadata.permissions().mode() & 0o111 != 0 {
+                    0o100755
+                } else {
+                    0o100644
+                };
+                if workdir_mode != entry.mode {
+                    hidden.push(path);
+                    continue;
+                }
+            }
+            let mut writer = match self.repo.blob_writer(Some(&path)) {
+                Ok(writer) => writer,
+                Err(e) => {
+                    Logger::error(format!(
+                        "Could not check {} in {} for local changes under skip-worktree or assume-unchanged ({}); treating it as changed so the update is refused rather than risk discarding it",
+                        path.display(),
+                        self.config.name,
+                        e
+                    ));
+                    hidden.push(path);
+                    continue;
+                }
+            };
+            let mut file = match std::fs::File::open(&full_path) {
+                Ok(file) => file,
+                Err(e) => {
+                    Logger::error(format!(
+                        "Could not read {} in {} to check it for local changes under skip-worktree or assume-unchanged ({}); treating it as changed so the update is refused rather than risk discarding it",
+                        path.display(),
+                        self.config.name,
+                        e
+                    ));
+                    hidden.push(path);
+                    continue;
+                }
+            };
+            if let Err(e) = std::io::copy(&mut file, &mut writer) {
+                Logger::error(format!(
+                    "Could not read {} in {} to check it for local changes under skip-worktree or assume-unchanged ({}); treating it as changed so the update is refused rather than risk discarding it",
+                    path.display(),
+                    self.config.name,
+                    e
+                ));
+                hidden.push(path);
+                continue;
+            }
+            let disk_id = match writer.commit() {
+                Ok(disk_id) => disk_id,
+                Err(e) => {
+                    Logger::error(format!(
+                        "Could not hash {} in {} to check it for local changes under skip-worktree or assume-unchanged ({}); treating it as changed so the update is refused rather than risk discarding it",
+                        path.display(),
+                        self.config.name,
+                        e
+                    ));
+                    hidden.push(path);
+                    continue;
+                }
+            };
+            if disk_id != entry.id {
+                hidden.push(path);
+            }
+        }
+        hidden
     }
 
     fn _apply_fast_forward(
@@ -1375,6 +1515,349 @@ mod tests {
         );
         drop(statuses);
         drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn set_index_flag(watched: &Path, flag: &str, path: &str) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(watched)
+            .args(["update-index", flag, path])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn repo_reset_to_v1_with_upstream_v2(
+        label: &str,
+    ) -> (PathBuf, PathBuf, Oid, Oid) {
+        let root = temp_dir(label);
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join("keep.txt"), "committed base\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        (root, watched_path, v1, v2)
+    }
+
+    #[test]
+    fn skip_worktree_edit_on_a_touched_file_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-touched");
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("src/main.rs")).unwrap(),
+            "local edit\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assume_unchanged_edit_on_a_touched_file_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("assume-unchanged-touched");
+        std::fs::write(watched_path.join("src/main.rs"), "local edit\n").unwrap();
+        set_index_flag(&watched_path, "--assume-unchanged", "src/main.rs");
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("src/main.rs")).unwrap(),
+            "local edit\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_edit_on_an_untouched_file_survives_fast_forward() {
+        let (root, watched_path, _v1, v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-untouched");
+        std::fs::write(watched_path.join("keep.txt"), "standing wip\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "keep.txt");
+
+        processor_for(&watched_path).update_from_remote().unwrap();
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-two")
+        );
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("keep.txt")).unwrap(),
+            "standing wip\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_without_an_edit_does_not_block_fast_forward() {
+        let (root, watched_path, _v1, v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-clean");
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._tracked_local_changes().unwrap().is_empty());
+        processor.update_from_remote().unwrap();
+        drop(processor);
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(
+            std::fs::read_to_string(watched_path.join("src/main.rs"))
+                .unwrap()
+                .contains("fixture-version-two")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_retargeted_symlink_on_a_touched_path_refuses_fast_forward() {
+        let root = temp_dir("skip-worktree-symlink");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::os::unix::fs::symlink("src/main.rs", upstream_path.join("link.txt")).unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::remove_file(upstream_path.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("Cargo.toml", upstream_path.join("link.txt")).unwrap();
+        commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::remove_file(watched_path.join("link.txt")).unwrap();
+        std::os::unix::fs::symlink("local-target", watched_path.join("link.txt")).unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "link.txt");
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("link.txt")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        assert_eq!(
+            std::fs::read_link(watched_path.join("link.txt")).unwrap(),
+            PathBuf::from("local-target")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_matching_its_blob_after_clean_filters_is_not_a_change() {
+        let root = temp_dir("skip-worktree-crlf");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt text eol=crlf\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "line one\nline two\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        std::fs::write(watched_path.join("data.txt"), "line one\r\nline two\r\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._tracked_local_changes().unwrap().is_empty());
+        processor.update_from_remote().unwrap();
+        drop(processor);
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert_eq!(
+            std::fs::read(watched_path.join("data.txt")).unwrap(),
+            b"line one\r\nline two\r\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assume_unchanged_deleted_file_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("assume-unchanged-deleted");
+        set_index_flag(&watched_path, "--assume-unchanged", "src/main.rs");
+        std::fs::remove_file(watched_path.join("src/main.rs")).unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert!(!watched_path.join("src/main.rs").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_deleted_file_survives_fast_forward() {
+        let (root, watched_path, _v1, v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-deleted");
+        set_index_flag(&watched_path, "--skip-worktree", "keep.txt");
+        std::fs::remove_file(watched_path.join("keep.txt")).unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("keep.txt")]
+        );
+        processor.update_from_remote().unwrap();
+        drop(processor);
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert!(!watched_path.join("keep.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_mode_change_on_a_touched_file_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-mode");
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions =
+                std::fs::metadata(watched_path.join("src/main.rs")).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(watched_path.join("src/main.rs"), permissions).unwrap();
+        }
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn assume_unchanged_file_replaced_by_a_directory_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("assume-unchanged-dir");
+        set_index_flag(&watched_path, "--assume-unchanged", "src/main.rs");
+        std::fs::remove_file(watched_path.join("src/main.rs")).unwrap();
+        std::fs::create_dir(watched_path.join("src/main.rs")).unwrap();
+        std::fs::write(watched_path.join("src/main.rs/precious.txt"), "precious\n").unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("src/main.rs/precious.txt")).unwrap(),
+            "precious\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_replaced_by_a_directory_refuses_fast_forward() {
+        let (root, watched_path, v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-dir");
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+        std::fs::remove_file(watched_path.join("src/main.rs")).unwrap();
+        std::fs::create_dir(watched_path.join("src/main.rs")).unwrap();
+        std::fs::write(watched_path.join("src/main.rs/precious.txt"), "precious\n").unwrap();
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read_to_string(watched_path.join("src/main.rs/precious.txt")).unwrap(),
+            "precious\n"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
