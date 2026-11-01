@@ -1,8 +1,10 @@
 use git2::{IndexAddOption, Oid, RepositoryInitOptions, Signature};
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 struct RootCleanup(PathBuf);
 
@@ -14,15 +16,27 @@ impl Drop for RootCleanup {
 
 struct DaemonGuard(Child);
 
+impl DaemonGuard {
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        self.0.try_wait().ok().flatten()
+    }
+}
+
 impl Drop for DaemonGuard {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{}", self.0.id())])
+                .status();
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
 fn temp_root() -> PathBuf {
-    let nanos = std::time::SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
@@ -55,6 +69,16 @@ fn commit_all(repo: &git2::Repository, message: &str) -> Oid {
     index
         .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
         .unwrap();
+    let workdir = repo.workdir().unwrap().to_path_buf();
+    let tracked: Vec<String> = index
+        .iter()
+        .map(|entry| String::from_utf8_lossy(&entry.path).into_owned())
+        .collect();
+    for path in tracked {
+        if !workdir.join(&path).exists() {
+            index.remove_path(Path::new(&path)).unwrap();
+        }
+    }
     index.write().unwrap();
     let tree_oid = index.write_tree().unwrap();
     let tree = repo.find_tree(tree_oid).unwrap();
@@ -80,6 +104,87 @@ fn ctl_binary() -> PathBuf {
     dir.join(format!("zlorb-ctl{}", std::env::consts::EXE_SUFFIX))
 }
 
+fn newest_source_mtime(dir: &Path) -> Option<SystemTime> {
+    let mut newest: Option<SystemTime> = None;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let entries = std::fs::read_dir(&current).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                if let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) {
+                    if newest.is_none_or(|n| mtime > n) {
+                        newest = Some(mtime);
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+fn ensure_ctl_binary() -> PathBuf {
+    let ctl = ctl_binary();
+    if ctl.exists() {
+        assert_ctl_fresh(&ctl);
+        return ctl;
+    }
+    let target_dir = ctl
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("acceptance-ctl-target");
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let build = Command::new(cargo)
+        .args(["build", "-p", "zlorb-ctl", "--locked"])
+        .current_dir(&workspace)
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "failed to build zlorb-ctl for this test: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let built = target_dir
+        .join("debug")
+        .join(format!("zlorb-ctl{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        built.exists(),
+        "zlorb-ctl build succeeded but no binary at {}",
+        built.display()
+    );
+    built
+}
+
+fn assert_ctl_fresh(ctl: &Path) {
+    let ctl_mtime = std::fs::metadata(ctl)
+        .and_then(|m| m.modified())
+        .unwrap();
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    for crate_dir in ["zlorb-ctl", "zlorb-lib", "zlorb-web"] {
+        let src = workspace.join(crate_dir).join("src");
+        if let Some(newest) = newest_source_mtime(&src) {
+            assert!(
+                ctl_mtime >= newest,
+                "zlorb-ctl binary at {} is older than the {} sources in this tree; rebuild the workspace binaries (cargo build --workspace or cargo test --workspace) so this test exercises the current ctl",
+                ctl.display(),
+                crate_dir
+            );
+        }
+    }
+}
+
 fn fixture_artifact(watched: &Path) -> PathBuf {
     watched
         .join("target")
@@ -100,8 +205,37 @@ fn read_log(path: &Path) -> String {
     if let Ok(mut file) = std::fs::File::open(path) {
         let _ = file.read_to_string(&mut contents);
     }
-    let tail: Vec<&str> = contents.lines().rev().take(40).collect();
+    let tail: Vec<&str> = contents.lines().rev().take(80).collect();
     tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
+fn wait_for_log(
+    daemon: &mut DaemonGuard,
+    log_path: &Path,
+    needle: &str,
+    timeout: Duration,
+    failure: &str,
+) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(status) = daemon.exited() {
+            panic!(
+                "daemon exited with {} while waiting for {:?}; daemon log tail:\n{}",
+                status,
+                needle,
+                read_log(log_path)
+            );
+        }
+        if read_log(log_path).contains(needle) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    panic!(
+        "{}; daemon log tail:\n{}",
+        failure,
+        read_log(log_path)
+    );
 }
 
 #[test]
@@ -122,6 +256,7 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     init_opts.initial_head("master");
     let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
     write_fixture_crate(&upstream_path, "fixture-version-one");
+    std::fs::write(upstream_path.join("old.txt"), "old file\n").unwrap();
     let v1 = commit_all(&upstream, "v1");
     drop(upstream);
     let watched = git2::Repository::clone(
@@ -132,23 +267,29 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     assert_eq!(watched.head().unwrap().target().unwrap(), v1);
     drop(watched);
 
-    let ctl = ctl_binary();
-    assert!(
-        ctl.exists(),
-        "built zlorb-ctl not found at {}; build the workspace binaries (cargo build --workspace or cargo test --workspace) before running this test",
-        ctl.display()
-    );
+    let ctl = ensure_ctl_binary();
 
     let daemon_log_path = root.join("daemon.log");
     let daemon_log = std::fs::File::create(&daemon_log_path).unwrap();
-    let daemon = Command::new(env!("CARGO_BIN_EXE_zlorb-service"))
+    let daemon_stderr = daemon_log.try_clone().unwrap();
+    let mut daemon_cmd = Command::new(env!("CARGO_BIN_EXE_zlorb-service"));
+    daemon_cmd
         .env("ZLORB_CONFIG_DIR", &config_dir)
         .env_remove("CARGO_TARGET_DIR")
         .stdout(Stdio::from(daemon_log))
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let daemon_guard = DaemonGuard(daemon);
+        .stderr(Stdio::from(daemon_stderr));
+    #[cfg(unix)]
+    daemon_cmd.process_group(0);
+    let daemon = daemon_cmd.spawn().unwrap();
+    let mut daemon_guard = DaemonGuard(daemon);
+
+    wait_for_log(
+        &mut daemon_guard,
+        &daemon_log_path,
+        "repos: []",
+        Duration::from_secs(30),
+        "daemon did not complete an initial cycle with an empty repo list within 30s",
+    );
 
     let add = Command::new(&ctl)
         .arg("add")
@@ -164,37 +305,23 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     );
     let repos_path = config_dir.join("repositories.toml");
     let repos = std::fs::read_to_string(&repos_path).unwrap();
-    assert!(repos.contains("watched"), "ctl add entry missing: {}", repos);
+    assert!(
+        repos.contains("name = \"watched\""),
+        "ctl add entry missing: {}",
+        repos
+    );
     assert!(
         repos.contains(&watched_path.to_string_lossy().into_owned()),
         "ctl add path missing: {}",
         repos
     );
 
-    assert!(
-        repos.contains("build_command = \"\""),
-        "unexpected ctl add entry shape: {}",
-        repos
-    );
-    let edited = repos.replace(
-        "build_command = \"\"",
-        "build_strategy = \"rust\"\nbuild_command = \"\"",
-    );
-    std::fs::write(&repos_path, edited).unwrap();
-
-    let pickup_deadline = Instant::now() + Duration::from_secs(30);
-    let mut picked_up = false;
-    while Instant::now() < pickup_deadline {
-        if read_log(&daemon_log_path).contains("Updating repo: watched") {
-            picked_up = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    assert!(
-        picked_up,
-        "daemon did not process the added repo within 30s; daemon log tail:\n{}",
-        read_log(&daemon_log_path)
+    wait_for_log(
+        &mut daemon_guard,
+        &daemon_log_path,
+        "Updating repo: watched",
+        Duration::from_secs(30),
+        "daemon did not process the added repo within 30s",
     );
     let watched = git2::Repository::open(&watched_path).unwrap();
     assert_eq!(watched.head().unwrap().target().unwrap(), v1);
@@ -206,8 +333,23 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     );
     assert!(!fixture_artifact(&watched_path).exists());
 
+    assert!(
+        repos.contains("build_command = \"\""),
+        "unexpected ctl add entry shape: {}",
+        repos
+    );
+    let edited = repos.replace(
+        "build_command = \"\"",
+        "build_strategy = \"rust\"\nbuild_command = \"\"",
+    );
+    let edit_tmp = config_dir.join("repositories.toml.tmp");
+    std::fs::write(&edit_tmp, edited).unwrap();
+    std::fs::rename(&edit_tmp, &repos_path).unwrap();
+
     let upstream = git2::Repository::open(&upstream_path).unwrap();
     write_fixture_crate(&upstream_path, "fixture-version-two");
+    std::fs::remove_file(upstream_path.join("old.txt")).unwrap();
+    std::fs::write(upstream_path.join("new.txt"), "new file\n").unwrap();
     let v2 = commit_all(&upstream, "v2");
     drop(upstream);
 
@@ -215,6 +357,13 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut built_output = None;
     while Instant::now() < deadline {
+        if let Some(status) = daemon_guard.exited() {
+            panic!(
+                "daemon exited with {} during the update/build wait; daemon log tail:\n{}",
+                status,
+                read_log(&daemon_log_path)
+            );
+        }
         if artifact.exists() {
             if let Some(stdout) = run_artifact(&artifact) {
                 if stdout.contains("fixture-version-two") {
@@ -238,6 +387,23 @@ fn full_user_flow_add_edit_remote_update_and_build() {
     assert_eq!(watched.head().unwrap().target().unwrap(), v2);
     let source = std::fs::read_to_string(watched_path.join("src/main.rs")).unwrap();
     assert!(source.contains("fixture-version-two"));
+    assert_eq!(
+        std::fs::read_to_string(watched_path.join("new.txt")).unwrap(),
+        "new file\n"
+    );
+    assert!(!watched_path.join("old.txt").exists());
+    let statuses = watched.statuses(None).unwrap();
+    assert!(
+        statuses
+            .iter()
+            .all(|entry| entry.status() == git2::Status::WT_NEW),
+        "no tracked file may be dirty after the fast-forward, got: {:?}",
+        statuses
+            .iter()
+            .map(|entry| (entry.path().map(str::to_string), entry.status()))
+            .collect::<Vec<_>>()
+    );
+    drop(statuses);
     drop(watched);
     drop(daemon_guard);
 
