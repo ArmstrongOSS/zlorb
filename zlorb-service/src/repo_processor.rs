@@ -1716,6 +1716,35 @@ mod tests {
     }
 
     #[test]
+    fn skip_worktree_file_with_only_mtime_restored_still_falls_back_to_the_hash_check() {
+        let (root, watched_path, _v1, _v2) =
+            repo_reset_to_v1_with_upstream_v2("skip-worktree-stat-mtime-restored");
+        set_index_flag(&watched_path, "--skip-worktree", "src/main.rs");
+        let recorded_mtime = std::fs::metadata(watched_path.join("src/main.rs"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::fs::write(
+            watched_path.join("src/main.rs"),
+            "fn main() { println!(\"local-edit-versionx\"); }\n",
+        )
+        .unwrap();
+        let file = std::fs::File::options()
+            .write(true)
+            .open(watched_path.join("src/main.rs"))
+            .unwrap();
+        file.set_modified(recorded_mtime).unwrap();
+        drop(file);
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("src/main.rs")]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn skip_worktree_retargeted_symlink_on_a_touched_path_refuses_fast_forward() {
         let root = temp_dir("skip-worktree-symlink");
         let upstream_path = root.join("upstream");
