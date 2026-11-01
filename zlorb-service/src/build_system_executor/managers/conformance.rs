@@ -203,9 +203,18 @@ fn registered_kinds_are_exactly_all_kinds_once_each() {
     let cases = registered_cases();
     assert_eq!(cases.len(), BuildStrategyKind::ALL.len() + 1);
     for (index, kind) in BuildStrategyKind::ALL.iter().enumerate() {
-        assert_eq!(cases[index].name, case_for_kind(*kind).name);
+        assert_eq!(cases[index].name, strategy_name(*kind));
     }
     assert_eq!(cases[cases.len() - 1].name, template_case().name);
+    for (index, case) in cases.iter().enumerate() {
+        for other in &cases[index + 1..] {
+            assert_ne!(case.name, other.name, "duplicate conformance case name");
+            assert_ne!(
+                case.runtime_name, other.runtime_name,
+                "duplicate conformance runtime name"
+            );
+        }
+    }
 }
 
 #[test]
