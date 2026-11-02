@@ -845,10 +845,184 @@ impl RepoProcessor {
                 }
             };
             if disk_id != entry.id {
-                hidden.push(path);
+                if !self._matches_after_external_clean_filter(
+                    &workdir,
+                    &path,
+                    &full_path,
+                    entry.id,
+                ) {
+                    hidden.push(path);
+                }
             }
         }
         hidden
+    }
+
+    fn _matches_after_external_clean_filter(
+        &self,
+        workdir: &Path,
+        path: &Path,
+        full_path: &Path,
+        expected: Oid,
+    ) -> bool {
+        self._matches_after_external_clean_filter_with_timeout(
+            workdir,
+            path,
+            full_path,
+            expected,
+            std::time::Duration::from_secs(30),
+        )
+    }
+
+    fn _matches_after_external_clean_filter_with_timeout(
+        &self,
+        workdir: &Path,
+        path: &Path,
+        full_path: &Path,
+        expected: Oid,
+        timeout: std::time::Duration,
+    ) -> bool {
+        use std::io::Read;
+        let Some(filter_name) = self._external_clean_filter_name(path) else {
+            return false;
+        };
+        Logger::info(format!(
+            "Re-checking {} in {} through git hash-object so the external clean filter {} is applied",
+            path.display(),
+            self.config.name,
+            filter_name
+        ));
+        let mut child = match Command::new("git")
+            .arg("-C")
+            .arg(workdir)
+            .arg("hash-object")
+            .arg("--")
+            .arg(full_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not run git hash-object for {} in {} to apply the external clean filter {} ({}); treating it as changed so the update is refused rather than risk discarding it",
+                    path.display(),
+                    self.config.name,
+                    filter_name,
+                    e
+                ));
+                return false;
+            }
+        };
+        let stdout_reader = child.stdout.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let stderr_reader = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = pipe.read_to_end(&mut buf);
+                buf
+            })
+        });
+        let deadline = std::time::Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        Logger::error(format!(
+                            "git hash-object for {} in {} did not finish within {} seconds while applying the external clean filter {}; treating it as changed so the update is refused rather than risk discarding it",
+                            path.display(),
+                            self.config.name,
+                            timeout.as_secs(),
+                            filter_name
+                        ));
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => {
+                    Logger::error(format!(
+                        "Could not wait for git hash-object for {} in {} to apply the external clean filter {} ({}); treating it as changed so the update is refused rather than risk discarding it",
+                        path.display(),
+                        self.config.name,
+                        filter_name,
+                        e
+                    ));
+                    return false;
+                }
+            }
+        };
+        let stdout = stdout_reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        let stderr = stderr_reader
+            .and_then(|reader| reader.join().ok())
+            .unwrap_or_default();
+        if !status.success() {
+            Logger::error(format!(
+                "git hash-object for {} in {} failed ({}) while applying the external clean filter {}; treating it as changed so the update is refused rather than risk discarding it: {}",
+                path.display(),
+                self.config.name,
+                status,
+                filter_name,
+                String::from_utf8_lossy(&stderr).trim()
+            ));
+            return false;
+        }
+        let text = String::from_utf8_lossy(&stdout);
+        match Oid::from_str(text.trim()) {
+            Ok(external_id) => {
+                if external_id != expected {
+                    Logger::warn(format!(
+                        "Re-checking {} in {} through the external clean filter {} still produced a different hash than the index; treating it as changed",
+                        path.display(),
+                        self.config.name,
+                        filter_name
+                    ));
+                }
+                external_id == expected
+            }
+            Err(e) => {
+                Logger::error(format!(
+                    "Could not parse the git hash-object result for {} in {} ({}); treating it as changed so the update is refused rather than risk discarding it",
+                    path.display(),
+                    self.config.name,
+                    e
+                ));
+                false
+            }
+        }
+    }
+
+    fn _external_clean_filter_name(&self, path: &Path) -> Option<String> {
+        let value = self
+            .repo
+            .get_attr(path, "filter", git2::AttrCheckFlags::FILE_THEN_INDEX)
+            .ok()?;
+        let name = match git2::AttrValue::from_string(value) {
+            git2::AttrValue::String(name) => name.to_string(),
+            _ => return None,
+        };
+        let config = self.repo.config().ok()?;
+        let configured = ["clean", "process"].iter().any(|kind| {
+            config
+                .get_string(&format!("filter.{}.{}", name, kind))
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        });
+        if configured {
+            Some(name)
+        } else {
+            None
+        }
     }
 
     fn _apply_fast_forward(
@@ -1532,6 +1706,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn set_repo_config(watched: &Path, key: &str, value: &str) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(watched)
+            .args(["config", key, value])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
     fn set_index_flag(watched: &Path, flag: &str, path: &str) {
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -1826,6 +2010,138 @@ mod tests {
             std::fs::read(watched_path.join("data.txt")).unwrap(),
             b"line one\r\nline two\r\n"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_matching_its_blob_after_an_external_clean_filter_is_not_a_change() {
+        let root = temp_dir("skip-worktree-external-filter");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt filter=strip\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "hello\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        write_fixture_crate(&upstream_path, "fixture-version-two");
+        let v2 = commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        set_repo_config(&watched_path, "filter.strip.clean", "sed 's/^X//'");
+        std::fs::write(watched_path.join("data.txt"), "Xhello\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        assert!(processor._tracked_local_changes().unwrap().is_empty());
+        processor.update_from_remote().unwrap();
+        drop(processor);
+
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v2);
+        drop(watched);
+        assert_eq!(
+            std::fs::read(watched_path.join("data.txt")).unwrap(),
+            b"Xhello\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn skip_worktree_file_changed_after_an_external_clean_filter_still_refuses_fast_forward() {
+        let root = temp_dir("skip-worktree-external-filter-changed");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt filter=strip\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "hello\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        std::fs::write(upstream_path.join("data.txt"), "version two\n").unwrap();
+        commit_all(&upstream, "v2");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        let checkout = watched.find_commit(v1).unwrap();
+        watched
+            .reset(checkout.as_object(), git2::ResetType::Hard, None)
+            .unwrap();
+        drop(checkout);
+        drop(watched);
+        set_repo_config(&watched_path, "filter.strip.clean", "sed 's/^X//'");
+        std::fs::write(watched_path.join("data.txt"), "Xgoodbye\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        assert_eq!(
+            processor._tracked_local_changes().unwrap(),
+            vec![PathBuf::from("data.txt")]
+        );
+        let err = processor.update_from_remote().unwrap_err();
+        assert!(format!("{:?}", err).contains("local changes to tracked files"));
+        drop(processor);
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        assert_eq!(
+            std::fs::read(watched_path.join("data.txt")).unwrap(),
+            b"Xgoodbye\n"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hanging_external_clean_filter_times_out_and_is_treated_as_a_change() {
+        let root = temp_dir("skip-worktree-external-filter-hang");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt filter=hang\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "hello\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        set_repo_config(&watched_path, "filter.hang.clean", "sleep 5");
+        std::fs::write(watched_path.join("data.txt"), "Xhello\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        let entry_id = processor
+            .repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("data.txt"), 0)
+            .unwrap()
+            .id;
+        let started = std::time::Instant::now();
+        let matched = processor._matches_after_external_clean_filter_with_timeout(
+            &watched_path,
+            Path::new("data.txt"),
+            &watched_path.join("data.txt"),
+            entry_id,
+            std::time::Duration::from_millis(200),
+        );
+        assert!(!matched);
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
         let _ = std::fs::remove_dir_all(&root);
     }
 
