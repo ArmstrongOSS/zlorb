@@ -223,7 +223,34 @@ fn registered_strategies_resolve_to_their_conformance_cases() {
         let mut config = repo_config(Path::new("/tmp/demo"));
         config.build_strategy = Some(strategy_name(kind).to_string());
         let strategy = select_strategy(&config).unwrap();
+        assert_eq!(strategy.kind(), kind);
         assert_eq!(case_for_strategy(&strategy).name, case_for_kind(kind).name);
+    }
+}
+
+#[test]
+fn every_build_strategy_variant_maps_to_a_kind_once_each() {
+    let strategies = BuildStrategy::all();
+    assert_eq!(strategies.len(), BuildStrategyKind::ALL.len());
+    for kind in BuildStrategyKind::ALL {
+        assert_eq!(
+            strategies.iter().filter(|s| s.kind() == *kind).count(),
+            1,
+            "build strategies must map to {kind:?} exactly once"
+        );
+    }
+    for strategy in &strategies {
+        let case = case_for_strategy(strategy);
+        let expected = case_for_kind(strategy.kind());
+        assert_eq!(case.name, strategy_name(strategy.kind()));
+        assert_eq!(case.name, expected.name);
+        assert_eq!(case.runtime_name, expected.runtime_name);
+        assert_eq!(case.steps.len(), expected.steps.len());
+        for (step, expected_step) in case.steps.iter().zip(expected.steps.iter()) {
+            assert_eq!(step.script, expected_step.script);
+            assert_eq!(step.label, expected_step.label);
+            assert_eq!(step.fail_fragment, expected_step.fail_fragment);
+        }
     }
 }
 

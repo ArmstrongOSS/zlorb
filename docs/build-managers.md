@@ -121,9 +121,14 @@ copy them. Fixing them is separate work from adding a manager.
      the manager in the shipped daemon: a module left under
      `#[cfg(test)]` exists only in test builds and the daemon will never
      run it.
-   - Add a `BuildStrategy` variant holding your manager in
-     `managers/manager.rs`, and add your manager to the `use` block at
-     the top of that file.
+   - Add your variant to the `build_strategies!` list in
+     `managers/manager.rs` as one `Variant => YourManager` entry, and
+     add your manager to the `use` block at the top of that file. That
+     one list is the definition site for `BuildStrategy`: it generates
+     both the enum and the test-only enumeration and kind mapping the
+     conformance suite derives from, and the generated kind mapping
+     names the same variant in `BuildStrategyKind`, so a variant added
+     to the list without its kind in `zlorb-lib` breaks the test build.
    - In `build_system_executor/mod.rs`: add your manager to the `use`
      block at the top of the file, add the matching arm in
      `select_strategy()`, add the matching arm in
@@ -144,7 +149,11 @@ copy them. Fixing them is separate work from adding a manager.
      no separate registration list or chain to update and no way to
      add a kind without the suite exercising it. The matches have no
      wildcard arm, so a strategy variant with no case arms breaks
-     the test build.
+     the test build. The suite also enumerates every `BuildStrategy`
+     variant from the `build_strategies!` list and asserts the
+     variants map to the kinds in `BuildStrategyKind::ALL` exactly
+     once each, so a strategy variant with no kind cannot pass
+     unexercised either.
 4. Document the new value in every place `README.md` lists strategies
    or shipped managers: the `build_strategy` paragraph under
    Configuration, the Getting Started step that names the valid values,
@@ -203,9 +212,12 @@ assumption:
       suite (`managers/conformance.rs`) and the suite passes for it.
       The suite's exhaustive matches over `BuildStrategyKind` and
       `BuildStrategy` fail the test build for a variant with no case
-      arms, and every conformance test exercises exactly the kinds in
+      arms, every conformance test exercises exactly the kinds in
       `BuildStrategyKind::ALL`, which is generated from the enum's own
-      definition list, so a passing `cargo test` is the proof this
+      definition list, and the suite enumerates the `BuildStrategy`
+      variants from the `build_strategies!` definition list in
+      `managers/manager.rs` and asserts they map to those kinds
+      exactly once each, so a passing `cargo test` is the proof this
       item holds.
 - [ ] No new manager shipped unused: the strategy exists because a real
       project is being watched with it.
