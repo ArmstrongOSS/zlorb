@@ -10,7 +10,7 @@ use crate::build_system_executor::managers::manager::Manager;
 pub struct RustManager;
 
 impl RustManager {
-    pub(crate) fn exec_with_cargo_path(
+    pub(crate) fn exec_with_runtime_path(
         &self,
         config: &RepositoryConfiguration,
         cargo: &Path,
@@ -21,7 +21,7 @@ impl RustManager {
 
 impl Manager for RustManager {
     fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
-        self.exec_with_cargo_path(config, Path::new("cargo"))
+        self.exec_with_runtime_path(config, Path::new("cargo"))
     }
 }
 

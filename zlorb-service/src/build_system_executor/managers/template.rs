@@ -23,15 +23,23 @@ impl TemplateManager {
         run_step(runtime, &["run", "build"], repo_path, "build")
     }
 
+    pub(crate) fn exec_with_runtime_path(
+        &self,
+        config: &RepositoryConfiguration,
+        runtime: &Path,
+    ) -> Result<(), ZlorbError> {
+        let repo_path = Path::new(&config.path);
+        self.install_dependencies(runtime, repo_path)?;
+        self.build(runtime, repo_path)
+    }
+
     pub(crate) fn exec_with_search_path(
         &self,
         config: &RepositoryConfiguration,
         search_path: Option<OsString>,
     ) -> Result<(), ZlorbError> {
         let runtime = self.find_runtime(search_path)?;
-        let repo_path = Path::new(&config.path);
-        self.install_dependencies(&runtime, repo_path)?;
-        self.build(&runtime, repo_path)
+        self.exec_with_runtime_path(config, &runtime)
     }
 }
 
