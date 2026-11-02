@@ -1,38 +1,22 @@
 mod managers;
 
 use crate::{
-    build_system_executor::managers::{
-        bun::BunManager,
-        manager::{BuildStrategy, Manager},
-        rust::RustManager,
-    },
-    repo_processor::RepoProcessor,
+    build_system_executor::managers::manager::BuildStrategy, repo_processor::RepoProcessor,
 };
-use zlorb_lib::{
-    config::{BuildStrategyKind, RepositoryConfiguration},
-    error::ZlorbError,
-};
+use zlorb_lib::{config::RepositoryConfiguration, error::ZlorbError};
 
 pub struct BuildSystemExecutor<'a> {
     pub processor: &'a RepoProcessor,
 }
 
-pub fn select_strategy(
-    config: &RepositoryConfiguration,
-) -> Result<BuildStrategy, ZlorbError> {
-    match config.resolved_build_strategy()? {
-        BuildStrategyKind::Bun => Ok(BuildStrategy::Bun(BunManager {})),
-        BuildStrategyKind::Rust => Ok(BuildStrategy::Rust(RustManager {})),
-    }
+pub fn select_strategy(config: &RepositoryConfiguration) -> Result<BuildStrategy, ZlorbError> {
+    Ok(BuildStrategy::for_kind(config.resolved_build_strategy()?))
 }
 
 impl<'a> BuildSystemExecutor<'a> {
     pub fn run_build(&self) -> Result<(), ZlorbError> {
         let config = &self.processor.config;
-        match select_strategy(config)? {
-            BuildStrategy::Bun(manager) => manager.exec(config),
-            BuildStrategy::Rust(manager) => manager.exec(config),
-        }
+        select_strategy(config)?.exec(config)
     }
 }
 

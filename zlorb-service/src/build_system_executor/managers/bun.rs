@@ -28,7 +28,7 @@ impl BunManager {
         run_bun_step(bun_path, &["run", "build"], repo_path, "build")
     }
 
-    pub(crate) fn exec_with_bun_path(
+    pub(crate) fn exec_with_runtime_path(
         &self,
         config: &RepositoryConfiguration,
         bun_path: &Path,
@@ -42,7 +42,7 @@ impl BunManager {
 impl Manager for BunManager {
     fn exec(&self, config: &RepositoryConfiguration) -> Result<(), ZlorbError> {
         let bun_path = self.check_bun_installed()?;
-        self.exec_with_bun_path(config, &bun_path)
+        self.exec_with_runtime_path(config, &bun_path)
     }
 }
 

@@ -31,11 +31,11 @@ struct ConformanceCase {
 }
 
 fn run_bun(config: &RepositoryConfiguration, runtime: &Path) -> Result<(), ZlorbError> {
-    BunManager.exec_with_bun_path(config, runtime)
+    BunManager.exec_with_runtime_path(config, runtime)
 }
 
 fn run_rust(config: &RepositoryConfiguration, runtime: &Path) -> Result<(), ZlorbError> {
-    RustManager.exec_with_cargo_path(config, runtime)
+    RustManager.exec_with_runtime_path(config, runtime)
 }
 
 fn run_template(config: &RepositoryConfiguration, runtime: &Path) -> Result<(), ZlorbError> {
@@ -254,6 +254,27 @@ fn every_build_strategy_variant_maps_to_a_kind_once_each() {
     }
 }
 
+fn assert_invocation_log(fixture: &Fixture, case: &ConformanceCase) {
+    let log = std::fs::read_to_string(fixture.repo_dir.join("invocations.log")).unwrap();
+    let repo_canon = fixture.repo_dir.canonicalize().unwrap();
+    let repo_canon = repo_canon.to_string_lossy();
+    let mut expected: Vec<&str> = Vec::new();
+    for step in case.steps {
+        expected.push(step.label);
+        expected.push(repo_canon.as_ref());
+    }
+    let lines: Vec<String> = log
+        .lines()
+        .map(|line| {
+            line.strip_prefix("call:")
+                .map(|label| label.to_string())
+                .unwrap_or_else(|| line.to_string())
+        })
+        .collect();
+    let expected: Vec<String> = expected.iter().map(|line| line.to_string()).collect();
+    assert_eq!(lines, expected, "{}: invocation log mismatch", case.name);
+}
+
 #[test]
 fn conformance_success_runs_steps_in_order_in_the_repo_dir() {
     for case in registered_cases() {
@@ -261,24 +282,58 @@ fn conformance_success_runs_steps_in_order_in_the_repo_dir() {
         let runtime = write_stand_in(&fixture, &case, None);
         let result = (case.run)(&repo_config(&fixture.repo_dir), &runtime);
         assert!(result.is_ok(), "{}: exec failed: {:?}", case.name, result);
-        let log = std::fs::read_to_string(fixture.repo_dir.join("invocations.log")).unwrap();
-        let repo_canon = fixture.repo_dir.canonicalize().unwrap();
-        let repo_canon = repo_canon.to_string_lossy();
-        let mut expected: Vec<&str> = Vec::new();
-        for step in case.steps {
-            expected.push(step.label);
-            expected.push(repo_canon.as_ref());
-        }
-        let lines: Vec<String> = log
-            .lines()
-            .map(|line| {
-                line.strip_prefix("call:")
-                    .map(|label| label.to_string())
-                    .unwrap_or_else(|| line.to_string())
-            })
-            .collect();
-        let expected: Vec<String> = expected.iter().map(|line| line.to_string()).collect();
-        assert_eq!(lines, expected, "{}: invocation log mismatch", case.name);
+        assert_invocation_log(&fixture, &case);
+        fixture.cleanup();
+    }
+}
+
+#[test]
+fn selected_strategy_payload_runs_its_kinds_steps() {
+    for kind in registered_kinds() {
+        let case = case_for_kind(kind);
+        let fixture = fixture(case.name, "payload");
+        let runtime = write_stand_in(&fixture, &case, None);
+        let mut config = repo_config(&fixture.repo_dir);
+        config.build_strategy = Some(strategy_name(kind).to_string());
+        let strategy = select_strategy(&config).unwrap();
+        assert_eq!(strategy.kind(), kind);
+        let result = strategy.exec_with_runtime_path(&config, &runtime);
+        assert!(
+            result.is_ok(),
+            "{}: selected payload exec failed: {:?}",
+            case.name,
+            result
+        );
+        assert_invocation_log(&fixture, &case);
+        fixture.cleanup();
+    }
+}
+
+#[test]
+fn selected_strategy_payload_failure_names_its_kinds_step() {
+    for kind in registered_kinds() {
+        let case = case_for_kind(kind);
+        let fixture = fixture(case.name, "payload-fail");
+        let runtime = write_stand_in(&fixture, &case, Some(0));
+        let mut config = repo_config(&fixture.repo_dir);
+        config.build_strategy = Some(strategy_name(kind).to_string());
+        let strategy = select_strategy(&config).unwrap();
+        let err = strategy
+            .exec_with_runtime_path(&config, &runtime)
+            .unwrap_err();
+        let debug = format!("{err:?}");
+        assert!(
+            debug.contains(case.steps[0].fail_fragment),
+            "{}: payload error does not name its kind's first step: {}",
+            case.name,
+            debug
+        );
+        assert!(
+            debug.contains("conformance-boom"),
+            "{}: payload error does not carry the command stderr: {}",
+            case.name,
+            debug
+        );
         fixture.cleanup();
     }
 }

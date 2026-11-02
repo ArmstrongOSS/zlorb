@@ -27,12 +27,14 @@ divergences.
    the same rule: exact, after trimming and lowercasing.
 2. `select_strategy()` in
    `zlorb-service/src/build_system_executor/mod.rs` maps each
-   `BuildStrategyKind` to one `BuildStrategy` variant holding one manager.
-3. `BuildSystemExecutor::run_build()` matches on that variant and calls the
-   shared `Manager::exec(config)` in
-   `zlorb-service/src/build_system_executor/managers/manager.rs`. The
-   executor, `RepoProcessor`, and the polling loop contain no per-toolchain
-   logic beyond that match.
+   `BuildStrategyKind` to one `BuildStrategy` variant holding one manager
+   through `BuildStrategy::for_kind()`, which the `build_strategies!` list
+   in `managers/manager.rs` generates from the same entries that define
+   the enum, so the kind-to-manager pairing has one definition site.
+3. `BuildSystemExecutor::run_build()` calls `BuildStrategy::exec()`,
+   also generated from that list, which calls the payload manager's
+   shared `Manager::exec(config)`. The executor, `RepoProcessor`, and
+   the polling loop contain no per-toolchain logic.
 
 ## The `Manager::exec` contract
 
@@ -125,23 +127,31 @@ copy them. Fixing them is separate work from adding a manager.
      `managers/manager.rs` as one `Variant => YourManager` entry, and
      add your manager to the `use` block at the top of that file. That
      one list is the definition site for `BuildStrategy`: it generates
-     both the enum and the test-only enumeration and kind mapping the
-     conformance suite derives from, and the generated kind mapping
-     names the same variant in `BuildStrategyKind`, so a variant added
-     to the list without its kind in `zlorb-lib` breaks the test build.
-   - In `build_system_executor/mod.rs`: add your manager to the `use`
-     block at the top of the file, add the matching arm in
-     `select_strategy()`, add the matching arm in
-     `BuildSystemExecutor::run_build()`, and add a selection test next
-     to `bun_strategy_selects_bun_manager`. Both matches are exhaustive,
-     so the compiler stops you if an arm is missing — a build that
-     passes with the variant added has both arms in place.
+     the enum, the `for_kind` selection mapping, the `exec` dispatch,
+     and the test-only enumeration and kind mapping the conformance
+     suite derives from, and the generated kind mapping names the same
+     variant in `BuildStrategyKind`, so a variant added to the list
+     without its kind in `zlorb-lib` breaks the test build.
+   - Give your manager a `pub(crate)` inherent method named
+     `exec_with_runtime_path(&self, config, runtime: &Path)` that runs
+     its steps against the runtime binary at that path, and have
+     `Manager::exec` call it with the discovered runtime. The template
+     and both shipped managers carry this seam, so a renamed copy of
+     the template already has it. This is the seam the conformance
+     suite drives a selected strategy's payload through.
+   - In `build_system_executor/mod.rs`: no wiring changes are needed —
+     `select_strategy()` and `run_build()` go through the
+     `BuildStrategy` methods the `build_strategies!` list generates.
+     Add a selection test next to `bun_strategy_selects_bun_manager`
+     asserting `select_strategy()` returns your variant; the pairing
+     between that variant and your manager is proven by the conformance
+     payload tests in the next bullet, not by the selection test.
    - Wire the manager into the shared conformance suite in
      `zlorb-service/src/build_system_executor/managers/conformance.rs`:
      add a case for it (a stand-in runtime name, its step scripts in
-     order, and a `run` function that drives its `exec` against a
-     stand-in binary, following the template manager's
-     `exec_with_search_path` pattern for the test seam), and add its
+     order, and a `run` function that drives its
+     `exec_with_runtime_path` against a stand-in binary, the seam the
+     shipped managers and the template all carry), and add its
      arms to the exhaustive matches over `BuildStrategyKind` and
      `BuildStrategy` in that file. Every conformance test derives the
      kinds it exercises from `BuildStrategyKind::ALL`, which is
@@ -210,6 +220,10 @@ assumption:
       cover both.
 - [ ] Conformance gate: the manager has a case in the shared conformance
       suite (`managers/conformance.rs`) and the suite passes for it.
+      The suite also drives the strategy `select_strategy()` returns
+      for each kind through its payload manager against that kind's
+      stand-in and compares the steps that actually run with the case,
+      so a manager paired with the wrong kind fails the suite.
       The suite's exhaustive matches over `BuildStrategyKind` and
       `BuildStrategy` fail the test build for a variant with no case
       arms, every conformance test exercises exactly the kinds in
