@@ -25,6 +25,27 @@ pub fn new_failed_restarts() -> FailedRestarts {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+fn kill_process_group(pgid: libc::pid_t) {
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
+fn collect_pipe_output(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    pgid: libc::pid_t,
+) -> Option<Vec<u8>> {
+    let drain = std::time::Duration::from_secs(5);
+    match rx.recv_timeout(drain) {
+        Ok(buf) => Some(buf),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            kill_process_group(pgid);
+            rx.recv_timeout(drain).ok()
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+    }
+}
+
 pub fn tracker_key(raw_path: &str) -> String {
     match std::fs::canonicalize(raw_path) {
         Ok(path) => path.to_string_lossy().into_owned(),
@@ -892,7 +913,9 @@ impl RepoProcessor {
             self.config.name,
             filter_name
         ));
-        let mut child = match Command::new("git")
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(workdir)
             .arg("hash-object")
@@ -901,8 +924,8 @@ impl RepoProcessor {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-        {
+            .process_group(0);
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
                 Logger::error(format!(
@@ -915,19 +938,24 @@ impl RepoProcessor {
                 return false;
             }
         };
-        let stdout_reader = child.stdout.take().map(|mut pipe| {
+        let pgid = child.id() as libc::pid_t;
+        let stdout_rx = child.stdout.take().map(|mut pipe| {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
                 let _ = pipe.read_to_end(&mut buf);
-                buf
-            })
+                let _ = tx.send(buf);
+            });
+            rx
         });
-        let stderr_reader = child.stderr.take().map(|mut pipe| {
+        let stderr_rx = child.stderr.take().map(|mut pipe| {
+            let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
                 let _ = pipe.read_to_end(&mut buf);
-                buf
-            })
+                let _ = tx.send(buf);
+            });
+            rx
         });
         let deadline = std::time::Instant::now() + timeout;
         let status = loop {
@@ -935,7 +963,7 @@ impl RepoProcessor {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
-                        let _ = child.kill();
+                        kill_process_group(pgid);
                         let _ = child.wait();
                         Logger::error(format!(
                             "git hash-object for {} in {} did not finish within {} seconds while applying the external clean filter {}; treating it as changed so the update is refused rather than risk discarding it",
@@ -944,11 +972,20 @@ impl RepoProcessor {
                             timeout.as_secs(),
                             filter_name
                         ));
+                        if let Some(rx) = &stdout_rx {
+                            let _ = collect_pipe_output(rx, pgid);
+                        }
+                        if let Some(rx) = &stderr_rx {
+                            let _ = collect_pipe_output(rx, pgid);
+                        }
                         return false;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 Err(e) => {
+                    kill_process_group(pgid);
+                    let _ = child.kill();
+                    let _ = child.wait();
                     Logger::error(format!(
                         "Could not wait for git hash-object for {} in {} to apply the external clean filter {} ({}); treating it as changed so the update is refused rather than risk discarding it",
                         path.display(),
@@ -956,16 +993,40 @@ impl RepoProcessor {
                         filter_name,
                         e
                     ));
+                    if let Some(rx) = &stdout_rx {
+                        let _ = collect_pipe_output(rx, pgid);
+                    }
+                    if let Some(rx) = &stderr_rx {
+                        let _ = collect_pipe_output(rx, pgid);
+                    }
                     return false;
                 }
             }
         };
-        let stdout = stdout_reader
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
-        let stderr = stderr_reader
-            .and_then(|reader| reader.join().ok())
-            .unwrap_or_default();
+        let mut stderr_rx = stderr_rx;
+        let stdout = match stdout_rx {
+            Some(rx) => match collect_pipe_output(&rx, pgid) {
+                Some(buf) => buf,
+                None => {
+                    kill_process_group(pgid);
+                    if let Some(rx) = stderr_rx.take() {
+                        let _ = collect_pipe_output(&rx, pgid);
+                    }
+                    Logger::error(format!(
+                        "git hash-object for {} in {} left its output pipes open after exiting while applying the external clean filter {}; treating it as changed so the update is refused rather than risk discarding it",
+                        path.display(),
+                        self.config.name,
+                        filter_name
+                    ));
+                    return false;
+                }
+            },
+            None => Vec::new(),
+        };
+        let stderr = match stderr_rx {
+            Some(rx) => collect_pipe_output(&rx, pgid).unwrap_or_default(),
+            None => Vec::new(),
+        };
         if !status.success() {
             Logger::error(format!(
                 "git hash-object for {} in {} failed ({}) while applying the external clean filter {}; treating it as changed so the update is refused rather than risk discarding it: {}",
@@ -2142,6 +2203,123 @@ mod tests {
         );
         assert!(!matched);
         assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn write_filter_script(root: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = root.join(name);
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    #[test]
+    fn timed_out_external_clean_filter_takes_its_process_group_down_with_it() {
+        let root = temp_dir("skip-worktree-external-filter-group-kill");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt filter=hang\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "hello\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        let script = write_filter_script(
+            &root,
+            "hang-filter.sh",
+            "#!/bin/sh\nwhile :; do echo tick >> \"$(dirname \"$0\")/ticks\"; sleep 0.1; done &\nwait\n",
+        );
+        set_repo_config(
+            &watched_path,
+            "filter.hang.clean",
+            script.to_string_lossy().as_ref(),
+        );
+        std::fs::write(watched_path.join("data.txt"), "Xhello\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        let entry_id = processor
+            .repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("data.txt"), 0)
+            .unwrap()
+            .id;
+        let started = std::time::Instant::now();
+        let matched = processor._matches_after_external_clean_filter_with_timeout(
+            &watched_path,
+            Path::new("data.txt"),
+            &watched_path.join("data.txt"),
+            entry_id,
+            std::time::Duration::from_millis(200),
+        );
+        assert!(!matched);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let ticks = root.join("ticks");
+        assert!(ticks.exists());
+        let size_before = std::fs::metadata(&ticks).unwrap().len();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        assert_eq!(std::fs::metadata(&ticks).unwrap().len(), size_before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn external_clean_filter_descendant_holding_stderr_does_not_block_the_recheck() {
+        let root = temp_dir("skip-worktree-external-filter-pipe-holder");
+        let upstream_path = root.join("upstream");
+        let watched_path = root.join("watched");
+        let mut init_opts = RepositoryInitOptions::new();
+        init_opts.initial_head("master");
+        let upstream = git2::Repository::init_opts(&upstream_path, &init_opts).unwrap();
+        write_fixture_crate(&upstream_path, "fixture-version-one");
+        std::fs::write(upstream_path.join(".gitattributes"), "*.txt filter=strip\n").unwrap();
+        std::fs::write(upstream_path.join("data.txt"), "hello\n").unwrap();
+        let v1 = commit_all(&upstream, "v1");
+        drop(upstream);
+        git2::Repository::clone(upstream_path.to_string_lossy().as_ref(), &watched_path)
+            .unwrap();
+        let watched = git2::Repository::open(&watched_path).unwrap();
+        assert_eq!(head_oid(&watched), v1);
+        drop(watched);
+        let script = write_filter_script(
+            &root,
+            "strip-filter.sh",
+            "#!/bin/sh\nsed 's/^X//'\nsleep 30 >/dev/null &\n",
+        );
+        set_repo_config(
+            &watched_path,
+            "filter.strip.clean",
+            script.to_string_lossy().as_ref(),
+        );
+        std::fs::write(watched_path.join("data.txt"), "Xhello\n").unwrap();
+        set_index_flag(&watched_path, "--skip-worktree", "data.txt");
+
+        let processor = processor_for(&watched_path);
+        let entry_id = processor
+            .repo
+            .index()
+            .unwrap()
+            .get_path(Path::new("data.txt"), 0)
+            .unwrap()
+            .id;
+        let started = std::time::Instant::now();
+        let matched = processor._matches_after_external_clean_filter_with_timeout(
+            &watched_path,
+            Path::new("data.txt"),
+            &watched_path.join("data.txt"),
+            entry_id,
+            std::time::Duration::from_secs(30),
+        );
+        assert!(matched);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
         let _ = std::fs::remove_dir_all(&root);
     }
 
